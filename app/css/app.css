@@ -1,0 +1,110 @@
+/* 电视磁力 for LG webOS 4.x (Chrome 53): flexbox only, no CSS vars / grid / gap.
+   Palette follows moontv-webos: bg #0f1117, accent #fad778, text #e8e8ec, secondary #8f94a3. */
+html, body {
+  margin: 0; padding: 0; width: 1920px; height: 1080px; overflow: hidden;
+  background: #0f1117; color: #e8e8ec;
+  font-family: "Noto Sans CJK SC", "Microsoft YaHei", "LG Display", sans-serif;
+  font-size: 28px;
+}
+* { box-sizing: border-box; -webkit-user-select: none; }
+img { -webkit-user-drag: none; }
+.hidden { display: none !important; }
+
+.view { position: absolute; top: 0; left: 0; width: 1920px; height: 1080px; display: none; }
+.view.active { display: block; }
+
+/* ------------------------------------------------------------ top bar */
+#topbar {
+  position: absolute; top: 0; left: 0; right: 0; height: 110px;
+  display: -webkit-flex; display: flex; -webkit-align-items: center; align-items: center; padding: 0 60px;
+  z-index: 5;
+}
+#topbar.hidden { display: none; }
+#topbar .logo { font-size: 40px; font-weight: bold; color: #fad778; margin-right: 40px; letter-spacing: 2px; white-space: nowrap; }
+#topbar .logo .ver { font-size: 16px; font-weight: normal; letter-spacing: 0; color: #5c6170; margin-left: 8px; }
+#topbar .crumb { font-size: 26px; color: #8f94a3; }
+#topbar .spacer { -webkit-flex: 1; flex: 1; }
+#topbar .hint { font-size: 22px; color: #5c6170; margin-right: 40px; }
+#topbar .clock { font-size: 30px; color: #8f94a3; }
+
+/* ------------------------------------------------------------ home */
+#home-main { position: absolute; top: 110px; left: 60px; width: 1320px; bottom: 0; }
+#home-status { font-size: 24px; color: #ff8a80; min-height: 30px; margin-bottom: 6px; }
+#home-scroll { position: absolute; top: 40px; left: 0; right: 0; bottom: 30px; overflow: hidden; }
+#home-list { position: relative; -webkit-transition: -webkit-transform 0.22s ease-out; transition: transform 0.22s ease-out; }
+.row { position: relative; padding: 22px 30px 20px; margin-bottom: 14px; border-radius: 16px;
+       background: #161925; border: 4px solid transparent;
+       -webkit-transition: border-color 0.15s, background 0.15s; transition: border-color 0.15s, background 0.15s; }
+.row .name { font-size: 32px; line-height: 42px; color: #e8e8ec; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .meta { font-size: 23px; line-height: 32px; color: #8f94a3; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .bar { height: 6px; background: #262a38; border-radius: 3px; margin-top: 12px; overflow: hidden; }
+.row .bar .fill { height: 100%; background: #22c55e; }
+.row.focus { border-color: #fad778; background: rgba(250,215,120,0.10); }
+.row.focus .name { color: #fff; }
+.row.danger { border-color: #e53935; background: rgba(229,57,53,0.12); }
+
+#home-qr-panel { position: absolute; right: 60px; top: 130px; width: 440px; text-align: center; background: #141720; border-radius: 22px; padding: 30px 26px 26px; }
+#home-qr-panel.off { display: none; }
+#home-qr-panel img { width: 320px; height: 320px; background: #fff; border-radius: 14px; padding: 10px; display: block; margin: 0 auto 18px; }
+#home-qr-panel .t1 { font-size: 30px; color: #fff; margin-bottom: 10px; }
+#home-qr-panel .t2 { font-size: 21px; color: #8f94a3; line-height: 1.45; }
+#home-qr-url { margin-top: 12px; font-size: 19px; color: #6d7282; word-break: break-all; }
+
+#home-big { position: absolute; top: 0; left: 0; width: 1920px; height: 1080px; display: none; z-index: 20;
+            background: rgba(10,11,16,0.96); text-align: center; padding-top: 120px; }
+#home.empty #home-big, #home.show-big-qr #home-big { display: block; }
+#home.empty #home-qr-panel { display: none; }
+#home-big img { width: 560px; height: 560px; background: #fff; border-radius: 22px; padding: 16px; display: block; margin: 0 auto 30px; }
+#home-big .t1 { font-size: 40px; color: #fff; margin-bottom: 10px; }
+#home-big .t2 { font-size: 24px; color: #8f94a3; width: 1000px; margin: 20px auto 0; line-height: 1.5; }
+#home-qr-big-url { font-size: 26px; color: #fad778; }
+
+/* ------------------------------------------------------------ files */
+#files-head { position: absolute; top: 110px; left: 60px; right: 60px; }
+#files-title { font-size: 40px; font-weight: bold; line-height: 52px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#files-sub { font-size: 24px; color: #8f94a3; margin-top: 4px; min-height: 32px; }
+#files-scroll { position: absolute; top: 210px; left: 60px; right: 60px; bottom: 20px; overflow: hidden; }
+#files-list { position: relative; -webkit-transition: -webkit-transform 0.22s ease-out; transition: transform 0.22s ease-out; }
+.file { position: relative; display: -webkit-flex; display: flex; -webkit-align-items: center; align-items: center;
+        padding: 16px 30px; margin-bottom: 10px; border-radius: 14px; background: #161925; border: 4px solid transparent; }
+.file .name { -webkit-flex: 1; flex: 1; min-width: 0; font-size: 30px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.file .meta { -webkit-flex: none; flex: none; font-size: 24px; color: #8f94a3; margin-left: 30px; }
+.file.focus { border-color: #fad778; background: rgba(250,215,120,0.10); }
+#files-empty { position: absolute; top: 240px; left: 60px; font-size: 28px; color: #6d7282; }
+
+/* ------------------------------------------------------------ player */
+#player { background: #000; }
+#video { position: absolute; top: 0; left: 0; width: 1920px; height: 1080px; background: #000; }
+#osd { position: absolute; left: 0; right: 0; bottom: 0; height: 300px;
+       background: -webkit-linear-gradient(bottom, rgba(0,0,0,0.9), rgba(0,0,0,0));
+       opacity: 0; -webkit-transition: opacity 0.25s; transition: opacity 0.25s; }
+#osd.show { opacity: 1; }
+#osd-title { position: absolute; top: 60px; left: 80px; right: 400px; font-size: 36px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#osd-title .ep-name { color: #fad778; }
+#osd-time { position: absolute; top: 66px; right: 80px; font-size: 30px; color: #e8e8ec; }
+#osd-bar { position: absolute; left: 80px; right: 80px; top: 124px; height: 10px; background: rgba(255,255,255,0.25); border-radius: 5px; }
+#osd-bar .buf { position: absolute; left: 0; top: 0; height: 100%; background: rgba(255,255,255,0.35); border-radius: 5px; }
+#osd-bar .pos { position: absolute; left: 0; top: 0; height: 100%; background: #fad778; border-radius: 5px; }
+#osd-hint { position: absolute; top: 150px; left: 80px; font-size: 22px; color: #8f94a3; }
+#osd-stat { position: absolute; top: 150px; right: 80px; font-size: 22px; color: #8f94a3; }
+#osd-state { position: absolute; top: 440px; left: 0; right: 0; text-align: center; font-size: 56px; line-height: 80px; color: #fff;
+             text-shadow: 0 2px 20px #000; white-space: pre-line; display: none; }
+#osd-state.show { display: block; }
+#osd-eps-wrap { position: absolute; left: 80px; right: 80px; top: 196px; height: 80px; overflow: hidden; }
+#osd-eps { position: relative; display: -webkit-flex; display: flex; padding: 6px 0 0 6px;
+           -webkit-transition: -webkit-transform 0.2s; transition: transform 0.2s; }
+.ep { height: 56px; line-height: 48px; width: 96px; font-size: 24px; margin-right: 12px; text-align: center; border-radius: 10px;
+      background: rgba(26,29,40,0.85); border: 4px solid #2a2f40; color: #c8ccd6; white-space: nowrap; overflow: hidden; -webkit-flex: none; flex: none; }
+.ep.focus { border-color: #fad778; color: #fff; background: rgba(250,215,120,0.18); }
+.ep.current { color: #fad778; border-color: rgba(250,215,120,0.5); }
+
+/* ------------------------------------------------------------ misc */
+#toast { position: absolute; bottom: 60px; left: 50%; -webkit-transform: translateX(-50%); transform: translateX(-50%);
+         max-width: 1500px; background: rgba(30,33,45,0.96); color: #fff; padding: 16px 40px; border-radius: 14px; font-size: 28px;
+         border: 2px solid #3a3f52; opacity: 0; -webkit-transition: opacity 0.2s; transition: opacity 0.2s; z-index: 50; }
+#toast.show { opacity: 1; }
+#loading { display: none; }
+
+/* Magic Remote: fatter seek bar while the pointer is in use */
+body.pointer #osd-bar { height: 16px; top: 106px; }
+body.pointer #osd-bar .pos::after { content: ""; position: absolute; right: -10px; top: -6px; width: 28px; height: 28px; border-radius: 50%; background: #fad778; }

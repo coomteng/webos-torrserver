@@ -1,0 +1,14 @@
+{
+  "id": "com.ting.torr",
+  "version": "0.1.0",
+  "vendor": "ting",
+  "type": "web",
+  "main": "index.html",
+  "title": "电视磁力",
+  "icon": "icon.png",
+  "largeIcon": "largeIcon.png",
+  "resolution": "1920x1080",
+  "disableBackHistoryAPI": true,
+  "handlesRelaunch": false,
+  "supportTouchMode": "none"
+}

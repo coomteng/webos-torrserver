@@ -1,0 +1,80 @@
+# webos-torrserver — 电视磁力
+
+A [TorrServer](https://github.com/YouROK/TorrServer) client for old LG webOS TVs (tested on an
+OLED55B8, webOS 4.4 / Chrome 53), plus a tiny Go sidecar so you can drive it from your phone:
+
+1. The TV shows a QR code.
+2. Scan it with your phone, paste a magnet link (or infohash / `.torrent` URL).
+3. Tap **在电视上观看** — the TV starts playing a few seconds later, while TorrServer caches the
+   torrent on the fly. **缓存（不播放）** just adds it; the TV list shows cache progress, peers and speed.
+
+[中文说明](README.zh-CN.md)
+
+```
+phone  --scan QR-->  http://<host>:8791/r/<id>    (phone page, served by the sidecar)
+  |-- POST /torrents {add}  ----------------------> TorrServer :8090   (directly; CORS is open)
+  |-- POST /remote/<id>/send {play,hash,index} --> sidecar :8791 --long-poll--> TV app
+TV app (ES5, com.ting.torr)
+  |-- POST /torrents {list,get}  ----------------> TorrServer
+  |-- <video src="http://<host>:8090/stream/<name>?link=<hash>&index=<n>&play">
+```
+
+The sidecar never proxies media or API calls; it only holds the phone→TV channel in memory and
+serves the static pages. TorrServer stays stock.
+
+## Components
+
+| dir | what |
+| --- | --- |
+| `sidecar/` | Go, stdlib + `skip2/go-qrcode`. `/remote/*` channel, `/r/<id>` phone page, `/tv/` app hosting, `/sim` browser simulator, `/config`. |
+| `app/` | TV app. No build step, ES5 only (`tools/es5check.sh`). `nav.js` (focus + Magic Remote pointer) is copied from [moontv-webos](https://github.com/coomteng/moontv-webos). |
+| `sim/` | 1920×1080 iframe + on-screen remote for desktop testing. |
+| `test/walk.js` | Headless end-to-end walk against a live sidecar + TorrServer (puppeteer-core). |
+| `compose.yml` | TorrServer + sidecar as one stack. |
+
+## Run the server side
+
+```sh
+TORR_PUBLIC=http://192.168.0.9 docker compose up -d
+```
+
+Then open `http://<host>:8090` once and set TorrServer to cache on disk (Settings → *Use disk*,
+path `/opt/ts/torrents`), or POST the settings as the stack on the reference box does:
+`CacheSize` 256 MiB, `UseDisk` true, `RemoveCacheOnDrop` true, `PreloadCache` 10, `ReaderReadAHead` 95,
+`ResponsiveMode` true. TorrServer runs without auth here — keep it on the LAN.
+
+`http://<host>:8791/` is the simulator, `http://<host>:8791/tv/` the app itself in a browser.
+
+## Install on the TV
+
+```sh
+cp local.env.example local.env   # TORRSERVER_BASE / SIDECAR_BASE as the TV sees them
+tools/build_ipk.sh               # ES5 gate, substitutes the placeholders, ares-package
+ares-install -d lgtv dist/com.ting.torr_*.ipk
+```
+
+Developer Mode / `ares-setup-device` notes are the same as for moontv-webos.
+
+## Remote keys
+
+| view | keys |
+| --- | --- |
+| home | OK open · ↑↓ move · red ×2 delete from TorrServer · green refresh · blue big QR |
+| files | OK play (resumes if watched before) · green refresh |
+| player | OK play/pause · ←→ ±10 s (hold to repeat) · ↑↓ file strip · ⏪⏩ ±60 s · Back exit |
+
+Magic Remote: hover focuses, click activates, wheel scrolls / seeks, click on the seek bar seeks.
+
+## Notes on TorrServer behaviour
+
+- A torrent idle for `TorrentDisconnectTimeout` (30 s) drops to state 5 "in db"; `list`/`get` then
+  return no `file_stats`. `{"action":"add","link":"<hash>"}` wakes it in ~0.1 s and returns the full
+  status — `API.getFull()` and the phone page do exactly that.
+- `/stream/<name>?link=<hash>&index=<n>&play` answers HTTP 206 ranges; seeking in the webOS pipeline
+  works through that. File `index` is TorrServer's 1-based `file_stats[].id`.
+- Resume positions live in the TV's `localStorage` (`torr.pos.<hash>`), since TorrServer's own
+  `TrackTimecode` is off by default.
+
+## License
+
+MIT.

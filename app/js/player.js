@@ -1,0 +1,308 @@
+/* player.js — fullscreen <video> on a TorrServer /stream URL with OSD and a file strip. ES5 only.
+ * Reduced from coomteng/moontv-webos app/js/player.js: plain <video src> (progressive MP4/MKV over
+ * HTTP ranges), no HLS/mediaOption, resume positions in localStorage, TorrServer stat in the OSD. */
+(function () {
+  'use strict';
+
+  var OSD_TIMEOUT = 4000;
+  var SAVE_INTERVAL = 10000;
+  var STAT_INTERVAL = 2000;
+  var SEEK_STEP = 10;
+  var VIDEO = /\.(mkv|mp4|m4v|avi|mov|ts|m2ts|mpg|mpeg|webm|wmv|flv|vob|iso|3gp)$/i;
+
+  var video = null;
+  var hash = '', title = '', files = [], index = 0, fileIdx = 0;
+  var pendingSeek = 0;
+  var osdTimer = null, saveTimer = null, statTimer = null;
+  var active = false;
+  var seekHold = { timer: null, dir: 0 };
+  var osdFocus = false;
+  var lastErr = '';
+
+  function $(id) { return UI.$(id); }
+
+  function fileById(id) { for (var i = 0; i < files.length; i++) if (files[i].id === id) return i; return -1; }
+  function shortName(p) { var s = String(p || ''); var i = s.lastIndexOf('/'); return i >= 0 ? s.slice(i + 1) : s; }
+  function current() { return files[fileIdx]; }
+
+  /* ---- OSD ---- */
+  function showOsd(sticky) {
+    UI.addClass($('osd'), 'show');
+    if (osdTimer) clearTimeout(osdTimer);
+    if (!sticky) osdTimer = setTimeout(hideOsd, OSD_TIMEOUT);
+  }
+  function hideOsd() {
+    if (osdFocus) { osdTimer = setTimeout(hideOsd, OSD_TIMEOUT); return; }
+    UI.removeClass($('osd'), 'show');
+  }
+  function setState(msg) {
+    var s = $('osd-state');
+    s.textContent = msg || '';
+    UI.toggleClass(s, 'show', !!msg);
+  }
+
+  function updateTime() {
+    var cur = video.currentTime || 0, dur = video.duration;
+    if (!isFinite(dur)) dur = 0;
+    $('osd-time').textContent = UI.fmtTime(cur) + ' / ' + UI.fmtTime(dur);
+    var pos = $('osd-bar').children[1], buf = $('osd-bar').children[0];
+    pos.style.width = dur ? Math.min(100, 100 * cur / dur) + '%' : '0%';
+    var b = 0;
+    try { if (video.buffered.length) b = video.buffered.end(video.buffered.length - 1); } catch (e) { /* ignore */ }
+    buf.style.width = dur ? Math.min(100, 100 * b / dur) + '%' : '0%';
+  }
+
+  function renderTitle() {
+    var t = $('osd-title');
+    t.children[0].textContent = title || '';
+    var f = current();
+    t.children[1].textContent = f && files.length > 1 ? ' > ' + shortName(f.path) : '';
+  }
+
+  function renderEps() {
+    var box = $('osd-eps');
+    UI.empty(box);
+    UI.translate(box, 0, 0);
+    for (var i = 0; i < files.length; i++) {
+      var e = UI.text('div', 'ep', files.length > 1 ? String(i + 1) : '正片');
+      e.setAttribute('title', shortName(files[i].path));
+      if (i === fileIdx) UI.addClass(e, 'current');
+      box.appendChild(e);
+    }
+    UI.toggleClass($('osd-eps-wrap'), 'hidden', files.length <= 1);
+  }
+  function markCurrentEp() {
+    var kids = $('osd-eps').children;
+    for (var i = 0; i < kids.length; i++) UI.toggleClass(kids[i], 'current', i === fileIdx);
+  }
+
+  function zones() {
+    App.setZones([{
+      name: 'osd-eps', cols: 0, remember: true, index: fileIdx,
+      getItems: function () { return UI.toArray($('osd-eps').children); },
+      onFocus: function (el) { Nav.scrollX($('osd-eps'), el, 1760, 0, 0); },
+      onEnter: function (el, i) { loadFile(i, 0); }
+    }], 0);
+    Nav.clearFocus();
+    osdFocus = false;
+  }
+  function enterStrip() { if (files.length <= 1) return; osdFocus = true; Nav.focusZone(0, fileIdx); showOsd(true); }
+  function leaveStrip() { osdFocus = false; Nav.clearFocus(); showOsd(false); }
+
+  /* ---- resume positions (localStorage) ---- */
+  function savePos(force) {
+    if (!video || !hash) return;
+    var cur = Math.floor(video.currentTime || 0), dur = video.duration;
+    if (!force && cur < 3) return;
+    var key = 'torr.pos.' + hash, m = {};
+    try { m = JSON.parse(window.localStorage.getItem(key) || '{}') || {}; } catch (e) { /* ignore */ }
+    if (isFinite(dur) && dur > 0 && cur > dur - 60) delete m[index]; else m[index] = cur;
+    try { window.localStorage.setItem(key, JSON.stringify(m)); } catch (e2) { /* ignore */ }
+  }
+  function startSaveTimer() { stopSaveTimer(); saveTimer = setInterval(function () { if (!video.paused && !video.ended) savePos(false); }, SAVE_INTERVAL); }
+  function stopSaveTimer() { if (saveTimer) { clearInterval(saveTimer); saveTimer = null; } }
+
+  /* ---- TorrServer stat in the OSD (speed / peers / cache) ---- */
+  function pollStat() {
+    API.get(hash).then(function (st) {
+      if (!active || !st) return;
+      var parts = [];
+      if (st.download_speed > 1024) parts.push('↓ ' + UI.fmtSize(st.download_speed) + '/s');
+      if (st.active_peers || st.total_peers) parts.push((st.active_peers || 0) + '/' + (st.total_peers || 0) + ' peers');
+      if (st.torrent_size) parts.push('已缓存 ' + Math.min(100, 100 * (st.loaded_size || 0) / st.torrent_size).toFixed(0) + '%');
+      $('osd-stat').textContent = parts.join(' · ');
+    }, function () {});
+  }
+  function startStat() { stopStat(); pollStat(); statTimer = setInterval(pollStat, STAT_INTERVAL); }
+  function stopStat() { if (statTimer) { clearInterval(statTimer); statTimer = null; } }
+
+  /* ---- playback ---- */
+  function loadFile(i, startTime) {
+    if (!files[i]) return;
+    if (i !== fileIdx && video.currentTime > 3) savePos(true);
+    fileIdx = i;
+    index = files[i].id;
+    pendingSeek = startTime || 0;
+    lastErr = '';
+    renderTitle();
+    markCurrentEp();
+    setState('加载中…');
+    var url = API.streamUrl(hash, index, shortName(files[i].path));
+    video.removeAttribute('src');
+    video.src = url;
+    try { video.load(); } catch (e) { /* ignore */ }
+    startPlay();
+    if (osdFocus) Nav.focusZone(0, fileIdx);
+    showOsd(false);
+    updateTime();
+    App.Remote.report({ view: 'player', title: title + (files.length > 1 ? ' > ' + shortName(files[i].path) : ''), hash: hash, index: index });
+  }
+
+  function startPlay() {
+    var p = null;
+    try { p = video.play(); } catch (e) { /* ignore */ }
+    if (p && p.then) p.then(null, function () {});
+  }
+
+  function togglePlay() {
+    if (video.paused || video.ended) startPlay(); else video.pause();
+    showOsd(false);
+  }
+
+  function seekBy(delta) {
+    var dur = video.duration;
+    var t = (video.currentTime || 0) + delta;
+    if (t < 0) t = 0;
+    if (isFinite(dur) && dur > 0 && t > dur - 1) t = dur - 1;
+    try { video.currentTime = t; } catch (e) { /* ignore */ }
+    setState((delta > 0 ? '▶▶ +' : '◀◀ −') + Math.abs(delta) + ' 秒');
+    updateTime();
+    showOsd(false);
+  }
+
+  function nextFile() {
+    if (fileIdx + 1 < files.length) loadFile(fileIdx + 1, 0);
+    else { setState('已播放完毕'); savePos(true); }
+  }
+
+  /* ---- pointer (Magic Remote) ---- */
+  function bindPointer() {
+    $('player').addEventListener('mousemove', function () { if (active) showOsd(false); }, false);
+    video.addEventListener('click', function (e) { if (active) { e.preventDefault(); togglePlay(); } }, false);
+    $('osd-state').addEventListener('click', function (e) { if (active) { e.preventDefault(); togglePlay(); } }, false);
+    $('osd-bar').addEventListener('click', function (e) {
+      if (!active || !isFinite(video.duration) || !video.duration) return;
+      e.preventDefault(); e.stopPropagation();
+      var r = this.getBoundingClientRect();
+      var frac = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+      video.currentTime = frac * video.duration;
+      updateTime(); showOsd(false);
+    }, false);
+    $('player').addEventListener('wheel', function (e) {
+      if (!active) return;
+      e.preventDefault(); e.stopPropagation();
+      seekBy((e.deltaY || 0) > 0 ? 10 : -10);
+    }, { passive: false });
+  }
+
+  /* ---- video events ---- */
+  function bindVideo() {
+    video.addEventListener('loadedmetadata', function () {
+      if (pendingSeek > 0 && pendingSeek < (video.duration || 1e9) - 5) { try { video.currentTime = pendingSeek; } catch (e) { /* ignore */ } }
+      pendingSeek = 0;
+      updateTime();
+    }, false);
+    video.addEventListener('playing', function () { setState(''); startSaveTimer(); }, false);
+    video.addEventListener('waiting', function () { setState('缓冲中…'); }, false);
+    video.addEventListener('pause', function () { if (active && !video.ended) { setState('已暂停'); showOsd(true); savePos(true); } }, false);
+    video.addEventListener('play', function () { setState(''); showOsd(false); }, false);
+    video.addEventListener('timeupdate', function () { if (active) updateTime(); }, false);
+    video.addEventListener('ended', function () { if (active) nextFile(); }, false);
+    video.addEventListener('error', function () {
+      if (!active) return;
+      var code = video.error && video.error.code;
+      var why = code === 4 ? '格式不支持或源不可达' : code === 3 ? '解码失败' : code === 2 ? '网络错误' : '错误 ' + (code || '?');
+      lastErr = why;
+      setState('播放失败（' + why + '）\n按返回键退出');
+      showOsd(true);
+      stopSaveTimer();
+    }, false);
+  }
+
+  /* ---- keys ---- */
+  function startSeekHold(dir) {
+    seekBy(dir * SEEK_STEP);
+    if (seekHold.timer) return;
+    seekHold.dir = dir;
+    seekHold.timer = setInterval(function () { seekBy(seekHold.dir * SEEK_STEP); }, 400);
+  }
+  function stopSeekHold() { if (seekHold.timer) { clearInterval(seekHold.timer); seekHold.timer = null; } }
+
+  function onKey(code, e) {
+    if (!active) return false;
+    if (code !== 37 && code !== 39) stopSeekHold();
+    if (osdFocus) {
+      switch (code) {
+        case 37: case 39: case 13: showOsd(true); return Nav.handleKey(code);
+        case 38: case 40: case 461: case 27: leaveStrip(); return true;
+      }
+    }
+    showOsd(false);
+    switch (code) {
+      case 13: togglePlay(); return true;
+      case 37: if (e && e.repeat) seekBy(-SEEK_STEP); else startSeekHold(-1); return true;
+      case 39: if (e && e.repeat) seekBy(SEEK_STEP); else startSeekHold(1); return true;
+      case 38: case 40: enterStrip(); return true;
+      case 415: if (video.paused) togglePlay(); return true;
+      case 19: if (!video.paused) togglePlay(); return true;
+      case 10252: togglePlay(); return true;
+      case 413: video.pause(); savePos(true); App.back(); return true;
+      case 417: seekBy(60); return true;
+      case 412: seekBy(-60); return true;
+      case 461: case 27: App.back(); return true;
+    }
+    return false;
+  }
+  function onKeyUp(e) { var code = e.keyCode || e.which; if (code === 37 || code === 39) stopSeekHold(); }
+
+  /* Entering from the phone ("play" message) only carries hash+index: fetch the file list first. */
+  function resolveFiles(params) {
+    if (params.files && params.files.length) return Promise.resolve(params.files);
+    return API.getFull(params.hash).then(function (st) {
+      var fs = (st && st.file_stats) || [], out = [];
+      for (var i = 0; i < fs.length; i++) if (VIDEO.test(fs[i].path)) out.push(fs[i]);
+      out.sort(function (a, b) { return a.path < b.path ? -1 : a.path > b.path ? 1 : 0; });
+      if (st && st.title && !params.title) title = st.title;
+      return out;
+    });
+  }
+
+  App.register('player', {
+    enter: function (params) {
+      if (!video) { video = $('video'); bindVideo(); bindPointer(); document.addEventListener('keyup', onKeyUp, false); }
+      active = true;
+      hash = params.hash;
+      title = params.title || '';
+      files = [];
+      $('osd-stat').textContent = '';
+      setState('加载中…');
+      resolveFiles(params).then(function (fs) {
+        if (!active) return;
+        files = fs;
+        if (!files.length) { setState('种子里没有视频文件\n按返回键退出'); showOsd(true); return; }
+        var i = params.index ? fileById(params.index) : -1;
+        if (i < 0) i = 0;
+        fileIdx = i;
+        renderTitle();
+        renderEps();
+        zones();
+        startStat();
+        var start = params.startTime || 0;
+        if (!start) {
+          try { var m = JSON.parse(window.localStorage.getItem('torr.pos.' + hash) || '{}'); if (m && m[files[i].id] > 30) start = m[files[i].id]; } catch (e) { /* ignore */ }
+        }
+        loadFile(i, start);
+      }, function (err) {
+        if (!active) return;
+        setState('读取种子失败：' + err.message + '\n按返回键退出');
+        showOsd(true);
+      });
+    },
+    leave: function () {
+      active = false;
+      stopSeekHold();
+      stopSaveTimer();
+      stopStat();
+      if (video) {
+        if (video.currentTime > 3) savePos(true);
+        try { video.pause(); } catch (e) { /* ignore */ }
+        video.removeAttribute('src');
+        try { video.load(); } catch (e2) { /* ignore */ }
+      }
+      setState('');
+      UI.removeClass($('osd'), 'show');
+      osdFocus = false;
+    },
+    key: onKey
+  });
+})();

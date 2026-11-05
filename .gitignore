@@ -1,0 +1,5 @@
+local.env
+dist/
+test/shots/
+*.ipk
+TODO.md

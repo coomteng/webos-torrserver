@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>电视磁力 webOS — TV simulator</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0a0b10; color: #c8ccd6; font: 14px/1.4 -apple-system, "Segoe UI", "Noto Sans", sans-serif; }
+  #wrap { display: flex; height: 100%; align-items: center; justify-content: center; gap: 28px; padding: 20px; box-sizing: border-box; }
+  /* TV bezel; the iframe is always 1920x1080 and scaled to fit */
+  #tv { position: relative; background: #000; border: 10px solid #1c1f29; border-radius: 14px; box-shadow: 0 30px 80px rgba(0,0,0,.7); flex: none; }
+  #tv iframe { width: 1920px; height: 1080px; border: 0; transform-origin: 0 0; display: block; background: #000; }
+  #tv .led { position: absolute; bottom: -7px; left: 50%; width: 6px; height: 6px; border-radius: 3px; background: #4caf50; box-shadow: 0 0 6px #4caf50; }
+  /* remote */
+  #remote { width: 200px; background: linear-gradient(#262a36, #171a23); border-radius: 100px 100px 60px 60px; padding: 24px 16px 28px; box-shadow: 0 20px 50px rgba(0,0,0,.6), inset 0 1px 0 rgba(255,255,255,.08); user-select: none; flex: none; }
+  .row { display: flex; justify-content: center; gap: 10px; margin: 10px 0; }
+  button.k { all: unset; cursor: pointer; width: 44px; height: 44px; border-radius: 50%; background: #343947; color: #e8e8ec; text-align: center; line-height: 44px; font-size: 16px; box-shadow: 0 3px 0 #0e1016; transition: transform .05s, background .1s; }
+  button.k:active, button.k.pressed { transform: translateY(2px); box-shadow: 0 1px 0 #0e1016; background: #fad778; color: #111; }
+  button.k.wide { width: 60px; border-radius: 22px; font-size: 12px; }
+  button.k.num { width: 38px; height: 38px; line-height: 38px; font-size: 13px; background: #2a2e3b; }
+  .dpad { position: relative; width: 150px; height: 150px; margin: 12px auto; border-radius: 50%; background: #2c3140; box-shadow: inset 0 2px 8px rgba(0,0,0,.5); }
+  .dpad button.k { position: absolute; width: 46px; height: 46px; line-height: 46px; background: transparent; box-shadow: none; font-size: 20px; }
+  .dpad button.k:active, .dpad button.k.pressed { background: rgba(250,215,120,.25); color: #fad778; transform: none; }
+  .dpad .d-up { top: 4px; left: 52px; } .dpad .d-down { bottom: 4px; left: 52px; } .dpad .d-left { left: 4px; top: 52px; } .dpad .d-right { right: 4px; top: 52px; }
+  .dpad .ok { left: 45px; top: 45px; width: 60px !important; height: 60px !important; line-height: 60px !important; border-radius: 50%; background: #fad778 !important; color: #111 !important; font-weight: 600; font-size: 14px; box-shadow: 0 3px 0 #9c8340 !important; }
+  .dpad .ok:active, .dpad .ok.pressed { transform: translateY(2px) !important; box-shadow: 0 1px 0 #9c8340 !important; }
+  .color { width: 34px !important; height: 14px !important; border-radius: 7px !important; line-height: 0; box-shadow: none; }
+  .red { background: #e53935 !important; } .green { background: #43a047 !important; } .yellow { background: #fdd835 !important; } .blue { background: #1e88e5 !important; }
+  .brand { text-align: center; font-size: 11px; letter-spacing: 3px; color: #6d7282; margin-bottom: 6px; }
+  #side { width: 300px; flex: none; color: #8f94a3; font-size: 13px; }
+  #side h1 { font-size: 18px; color: #e8e8ec; margin: 0 0 6px; }
+  #side code { background: #1a1d28; padding: 1px 5px; border-radius: 4px; color: #c8ccd6; }
+  #side table { border-collapse: collapse; margin: 10px 0; }
+  #side td { padding: 2px 8px 2px 0; vertical-align: top; }
+  #side td:first-child { color: #fad778; white-space: nowrap; }
+  #log { margin-top: 10px; height: 160px; overflow: auto; background: #0f1117; border: 1px solid #1f2330; border-radius: 6px; padding: 6px 8px; font: 12px/1.5 ui-monospace, Menlo, monospace; color: #9aa0ae; }
+  #log .err { color: #ff8a80; }
+  #side a { color: #7ec8ff; }
+  label.opt { display: block; margin: 4px 0; cursor: pointer; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="side">
+    <h1>电视磁力 webOS 模拟器</h1>
+    <div>左边是电视（1920×1080 等比缩放，跑的就是电视上那份 <code>app/</code>），右边是遥控器。页面需要焦点时点一下电视。</div>
+    <table>
+      <tr><td>← ↑ → ↓</td><td>方向键 / 鼠标点遥控器</td></tr>
+      <tr><td>Enter</td><td>OK（确认）</td></tr>
+      <tr><td>Esc / Backspace</td><td>返回（webOS 461）</td></tr>
+      <tr><td>Space</td><td>播放/暂停</td></tr>
+      <tr><td>F1–F4</td><td>红 / 绿 / 黄 / 蓝</td></tr>
+    </table>
+        <div>注意：桌面 Chrome 比电视新得多，这里能跑不代表电视能跑；提交前仍要过 ES5 门禁。视频直接走 TorrServer /stream：桌面 Chrome 能播 MP4/WebM，MKV 多半不行（电视原生播放器可以）。</div>
+    <div id="log"></div>
+    <div style="margin-top:8px"><a href="/tv/" target="_blank">在新标签页全屏打开 APP</a> · <a href="/health" target="_blank">/health</a> · <a id="phone" href="#" target="_blank">手机页</a></div>
+  </div>
+
+  <div id="tv"><iframe id="screen" src="/tv/index.html" allow="autoplay"></iframe><div class="led"></div></div>
+
+  <div id="remote">
+    <div class="brand">LG</div>
+    <div class="row"><button class="k wide" data-k="461" title="Back / Esc">返回</button><button class="k wide" data-k="exit" title="关闭应用">退出</button></div>
+    <div class="row"><button class="k num" data-k="49">1</button><button class="k num" data-k="50">2</button><button class="k num" data-k="51">3</button></div>
+    <div class="row"><button class="k num" data-k="52">4</button><button class="k num" data-k="53">5</button><button class="k num" data-k="54">6</button></div>
+    <div class="row"><button class="k num" data-k="55">7</button><button class="k num" data-k="56">8</button><button class="k num" data-k="57">9</button></div>
+    <div class="row"><button class="k num" data-k="48">0</button></div>
+    <div class="dpad">
+      <button class="k d-up" data-k="38">▲</button><button class="k d-left" data-k="37">◀</button>
+      <button class="k ok" data-k="13">OK</button>
+      <button class="k d-right" data-k="39">▶</button><button class="k d-down" data-k="40">▼</button>
+    </div>
+    <div class="row"><button class="k color red" data-k="403" title="红 F1"></button><button class="k color green" data-k="404" title="绿 F2"></button><button class="k color yellow" data-k="405" title="黄 F3"></button><button class="k color blue" data-k="406" title="蓝 F4"></button></div>
+    <div class="row"><button class="k" data-k="412" title="快退">⏪</button><button class="k" data-k="415" title="播放">▶</button><button class="k" data-k="19" title="暂停">⏸</button><button class="k" data-k="417" title="快进">⏩</button></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  var frame = document.getElementById('screen');
+  var tv = document.getElementById('tv');
+  var logEl = document.getElementById('log');
+
+  function log(msg, cls) {
+    var d = document.createElement('div'); d.textContent = new Date().toLocaleTimeString() + '  ' + msg; if (cls) d.className = cls;
+    logEl.appendChild(d); logEl.scrollTop = logEl.scrollHeight;
+    while (logEl.children.length > 200) logEl.removeChild(logEl.firstChild);
+  }
+
+  /* scale the 1920x1080 iframe to the available space */
+  function fit() {
+    var availW = window.innerWidth - 300 - 200 - 28 * 2 - 40 - 20;
+    var availH = window.innerHeight - 40 - 20;
+    var s = Math.min(availW / 1920, availH / 1080, 1);
+    frame.style.transform = 'scale(' + s + ')';
+    tv.style.width = (1920 * s) + 'px'; tv.style.height = (1080 * s) + 'px';
+  }
+  window.addEventListener('resize', fit); fit();
+
+  /* deliver a webOS-style keydown into the app document */
+  function send(code) {
+    if (code === 'exit') { frame.contentWindow.location.reload(); log('relaunch app'); return; }
+    code = +code;
+    var doc = frame.contentDocument; if (!doc) return;
+    var ev;
+    try { ev = new frame.contentWindow.KeyboardEvent('keydown', { keyCode: code, which: code, bubbles: true, cancelable: true }); }
+    catch (e) { ev = doc.createEvent('Event'); ev.initEvent('keydown', true, true); }
+    /* keyCode/which are read-only on real KeyboardEvent instances in modern Chrome; define them */
+    try { Object.defineProperty(ev, 'keyCode', { get: function () { return code; } }); Object.defineProperty(ev, 'which', { get: function () { return code; } }); } catch (e2) {}
+    (doc.activeElement || doc).dispatchEvent(ev);
+  }
+
+  /* remote buttons */
+  var buttons = document.querySelectorAll('#remote button.k');
+  for (var i = 0; i < buttons.length; i++) {
+    buttons[i].addEventListener('click', function () { send(this.getAttribute('data-k')); });
+  }
+  function flash(code) {
+    for (var j = 0; j < buttons.length; j++) if (buttons[j].getAttribute('data-k') === String(code)) {
+      var b = buttons[j]; b.classList.add('pressed'); setTimeout(function () { b.classList.remove('pressed'); }, 120);
+    }
+  }
+
+  /* physical keyboard → remote codes; the app's own window.close() → relaunch */
+  var MAP = { ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, Enter: 13, Escape: 461, Backspace: 461,
+              ' ': 10252, F1: 403, F2: 404, F3: 405, F4: 406, MediaPlayPause: 10252, MediaTrackNext: 417, MediaTrackPrevious: 412 };
+  function onKey(e) {
+    var code = MAP[e.key];
+    if (code === undefined && /^[0-9]$/.test(e.key)) code = 48 + (+e.key);
+    if (code === undefined && /^[a-zA-Z]$/.test(e.key)) code = e.key.toUpperCase().charCodeAt(0);
+    if (code === undefined) return;
+    if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') && e.target.ownerDocument === document) return;
+    e.preventDefault(); flash(code); send(code);
+  }
+  document.addEventListener('keydown', onKey);
+
+  function hook() {
+    var w = frame.contentWindow, d = frame.contentDocument;
+    if (!w || !d) return;
+    /* keys typed while the iframe has focus: the app handles them itself; just mirror on the remote */
+    d.addEventListener('keydown', function (e) { flash(e.keyCode || e.which); }, true);
+    w.addEventListener('error', function (e) { log('JS error: ' + (e.message || e), 'err'); });
+    var oc = w.console && w.console.error;
+    if (w.console) w.console.error = function () { log('console.error: ' + Array.prototype.join.call(arguments, ' ').slice(0, 200), 'err'); if (oc) oc.apply(w.console, arguments); };
+    w.close = function () { log('app called window.close() → relaunch'); setTimeout(function () { w.location.reload(); }, 400); };
+    log('app loaded (' + (w.navigator.userAgent.match(/Chrome\/[\d.]+/) || ['?'])[0] + ' — the TV is Chrome/53)');
+  }
+  frame.addEventListener('load', hook);
+  /* phone page link follows the TV's channel id */
+  setInterval(function () { try { var id = frame.contentWindow.App && frame.contentWindow.App.Remote.id(); if (id) document.getElementById('phone').href = '/r/' + id; } catch (e) {} }, 1000);
+})();
+</script>
+</body>
+</html>

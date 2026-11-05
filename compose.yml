@@ -1,0 +1,27 @@
+# TorrServer + torr-remote sidecar, as deployed on the LAN box (Portainer stack "torrserver").
+# Set TORR_PUBLIC to the address the TV and phones use to reach this host.
+services:
+  torrserver:
+    image: ghcr.io/yourok/torrserver:latest
+    container_name: torrserver
+    restart: unless-stopped
+    network_mode: host              # BT peers + DLNA/UPnP work best without NAT; web UI/API on :8090
+    environment:
+      TS_PORT: "8090"
+      TS_DONTKILL: "1"
+    volumes:
+      - ${TORR_CONFIG:-./data/config}:/opt/ts/config
+      - ${TORR_CACHE:-./data/cache}:/opt/ts/torrents   # disk cache (settings: UseDisk + TorrentsSavePath=/opt/ts/torrents)
+    mem_limit: ${TORR_MEM:-768m}
+
+  torr-remote:
+    image: ghcr.io/coomteng/webos-torrserver:${TAG:-latest}
+    container_name: torr-remote
+    restart: unless-stopped
+    ports:
+      - "8791:8791"
+    environment:
+      TORR_SERVER: ${TORR_PUBLIC:-http://192.168.0.9}:8090   # what the TV/phone will call
+      TZ: ${TZ:-Europe/Zurich}
+    depends_on:
+      - torrserver

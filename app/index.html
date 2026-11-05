@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>电视磁力</title>
+  <meta name="viewport" content="width=1920, height=1080">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+
+  <div id="topbar">
+    <div class="logo">电视磁力<span class="ver" id="app-version"></span></div>
+    <div class="crumb" id="home-count"></div>
+    <div class="spacer"></div>
+    <div class="hint" id="topbar-hint">确认键 打开 · 红键 删除 · 绿键 刷新 · 蓝键 放大二维码</div>
+    <div class="clock" id="clock">--:--</div>
+  </div>
+
+  <!-- Home: torrent list + phone QR -->
+  <div id="home" class="view">
+    <div id="home-main">
+      <div id="home-status"></div>
+      <div id="home-scroll"><div id="home-list"></div></div>
+    </div>
+    <div id="home-qr-panel">
+      <img id="home-qr" alt="QR">
+      <div class="t1">手机扫码添加</div>
+      <div class="t2">同一 Wi-Fi 下用手机相机扫码，在手机上粘贴磁力链接，选「在电视上观看」</div>
+      <div id="home-qr-url"></div>
+    </div>
+    <!-- empty state / blue key: big QR -->
+    <div id="home-big">
+      <img id="home-qr-big" alt="QR">
+      <div class="t1">用手机扫码，粘贴磁力链接</div>
+      <div id="home-qr-big-url"></div>
+      <div class="t2">电视上还没有种子。扫码后在手机上粘贴 magnet 链接，选「在电视上观看」，这里会自动开始播放。</div>
+    </div>
+  </div>
+
+  <!-- Files inside a torrent -->
+  <div id="files" class="view">
+    <div id="files-head">
+      <div id="files-title"></div>
+      <div id="files-sub"></div>
+    </div>
+    <div id="files-scroll"><div id="files-list"></div></div>
+    <div id="files-empty" class="hidden">这个种子里没有视频文件</div>
+  </div>
+
+  <!-- Player -->
+  <div id="player" class="view">
+    <video id="video" autoplay preload="auto"></video>
+    <div id="osd-state"></div>
+    <div id="osd">
+      <div id="osd-title"><span class="name"></span><span class="ep-name"></span></div>
+      <div id="osd-time">00:00 / 00:00</div>
+      <div id="osd-bar"><div class="buf"></div><div class="pos"></div></div>
+      <div id="osd-hint">确认键 播放/暂停 · ←→ 快退/快进 10 秒 · ↑↓ 选文件 · 返回键 退出</div>
+      <div id="osd-stat"></div>
+      <div id="osd-eps-wrap"><div id="osd-eps"></div></div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+  <script src="js/util.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/nav.js"></script>
+  <script src="js/app.js"></script>
+  <script src="js/home.js"></script>
+  <script src="js/files.js"></script>
+  <script src="js/player.js"></script>
+</body>
+</html>
