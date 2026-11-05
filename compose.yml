@@ -2,7 +2,7 @@
 # Set TORR_PUBLIC to the address the TV and phones use to reach this host.
 services:
   torrserver:
-    image: ghcr.io/yourok/torrserver:latest
+    image: ghcr.io/coomteng/torrserver:master   # fork with StopSeedingWhenCached (github.com/coomteng/TorrServer)
     container_name: torrserver
     restart: unless-stopped
     network_mode: host              # BT peers + DLNA/UPnP work best without NAT; web UI/API on :8090
