@@ -30,6 +30,7 @@ serves the static pages. TorrServer stays stock.
 | `app/` | TV app. No build step, ES5 only (`tools/es5check.sh`). `nav.js` (focus + Magic Remote pointer) is copied from [moontv-webos](https://github.com/coomteng/moontv-webos). |
 | `sim/` | 1920×1080 iframe + on-screen remote for desktop testing. |
 | `test/walk.js` | Headless end-to-end walk against a live sidecar + TorrServer (puppeteer-core). |
+| `test/audio.js` | Self-contained headless check of audio-track switching (ffmpeg fixture + fake TorrServer). |
 | `compose.yml` | TorrServer + sidecar as one stack. |
 
 ## Run the server side
@@ -61,7 +62,7 @@ Developer Mode / `ares-setup-device` notes are the same as for moontv-webos.
 | --- | --- |
 | home | OK open · ↑↓ move · red ×2 delete from TorrServer · green refresh · blue big QR |
 | files | OK play (resumes if watched before) · green refresh |
-| player | OK play/pause · ←→ ±10 s (hold to repeat) · ↑↓ file strip · ⏪⏩ ±60 s · Back exit |
+| player | OK play/pause · ←→ ±10 s (hold to repeat) · ↑↓ file strip · yellow next audio track · ⏪⏩ ±60 s · Back exit |
 
 Magic Remote: hover focuses, click activates, wheel scrolls / seeks, click on the seek bar seeks.
 
@@ -72,6 +73,9 @@ Magic Remote: hover focuses, click activates, wheel scrolls / seeks, click on th
   status — `API.getFull()` and the phone page do exactly that.
 - `/stream/<name>?link=<hash>&index=<n>&play` answers HTTP 206 ranges; seeking in the webOS pipeline
   works through that. File `index` is TorrServer's 1-based `file_stats[].id`.
+- Audio tracks: multi-audio MKV/MP4 show a `♪ 音轨 n/N · 语言` badge in the OSD; the yellow key (or clicking the badge)
+  cycles `video.audioTracks[i].enabled`. The chosen language is remembered (`torr.lang`) and auto-selected for the next
+  file. Needs `HTMLMediaElement.audioTracks` — webOS ≥ 4 has it; desktop Chrome only with `--enable-blink-features=AudioVideoTracks`.
 - Resume positions live in the TV's `localStorage` (`torr.pos.<hash>`), since TorrServer's own
   `TrackTimecode` is off by default.
 

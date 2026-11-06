@@ -87,6 +87,9 @@ img { -webkit-user-drag: none; }
 #osd-bar .pos { position: absolute; left: 0; top: 0; height: 100%; background: #fad778; border-radius: 5px; }
 #osd-hint { position: absolute; top: 150px; left: 80px; font-size: 22px; color: #8f94a3; }
 #osd-stat { position: absolute; top: 150px; right: 80px; font-size: 22px; color: #8f94a3; }
+#osd-audio { position: absolute; top: 14px; right: 80px; height: 40px; line-height: 36px; padding: 0 18px; font-size: 24px; color: #fad778;
+             border: 2px solid rgba(250,215,120,0.6); border-radius: 10px; background: rgba(26,29,40,0.85); cursor: pointer; }
+#osd-audio::before { content: "♪ "; }
 #osd-state { position: absolute; top: 440px; left: 0; right: 0; text-align: center; font-size: 56px; line-height: 80px; color: #fff;
              text-shadow: 0 2px 20px #000; white-space: pre-line; display: none; }
 #osd-state.show { display: block; }

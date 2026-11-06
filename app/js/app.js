@@ -156,6 +156,7 @@ var App = (function () {
   return {
     register: register, go: go, goFresh: goFresh, back: back, setZones: setZones,
     currentName: currentName, errorToast: errorToast, Remote: Remote, init: init,
+    view: function (name) { return views[name]; },
     stackNames: function () { var n = []; for (var i = 0; i < stack.length; i++) n.push(stack[i].name); return n; }
   };
 })();

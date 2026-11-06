@@ -43,7 +43,7 @@ ares-install -d lgtv dist/com.ting.torr_*.ipk
 | --- | --- |
 | 首页 | 确认 打开 · ↑↓ 移动 · 红键两次 删除 · 绿键 刷新 · 蓝键 放大二维码 |
 | 文件 | 确认 播放（有记录则续播）· 绿键 刷新 |
-| 播放 | 确认 播放/暂停 · ←→ ±10 秒（长按连续）· ↑↓ 选文件 · ⏪⏩ ±60 秒 · 返回 退出 |
+| 播放 | 确认 播放/暂停 · ←→ ±10 秒（长按连续）· ↑↓ 选文件 · 黄键 切换音轨 · ⏪⏩ ±60 秒 · 返回 退出 |
 
 Magic Remote：悬停聚焦、点击确认、滚轮滚动/快进快退、点进度条跳转。
 
@@ -52,6 +52,8 @@ Magic Remote：悬停聚焦、点击确认、滚轮滚动/快进快退、点进�
 - 种子空闲 30 秒（`TorrentDisconnectTimeout`）后变成状态 5「in db」，`list`/`get` 不再带 `file_stats`；
   用 `{"action":"add","link":"<hash>"}` 可在 0.1 秒内唤醒并拿到完整状态，APP 的 `API.getFull()` 和手机页都这么做。
 - `/stream/<name>?link=<hash>&index=<n>&play` 返回 HTTP 206 分片，webOS 原生播放器靠它 seek；`index` 是 1 起的 `file_stats[].id`。
+- 多音轨 MKV/MP4 在 OSD 右上显示「♪ 音轨 n/N · 语言」，黄键（或点击徽标）循环切换 `video.audioTracks[i].enabled`；
+  选过的语言记在 `torr.lang`，下一文件自动选同语言。依赖 `HTMLMediaElement.audioTracks`（webOS ≥ 4 有；桌面 Chrome 需 `--enable-blink-features=AudioVideoTracks`）。
 - 续播位置存在电视 `localStorage`（`torr.pos.<hash>`），因为 TorrServer 的 `TrackTimecode` 默认关。
 
 MIT。

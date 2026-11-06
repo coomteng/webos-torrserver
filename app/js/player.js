@@ -18,6 +18,8 @@
   var seekHold = { timer: null, dir: 0 };
   var osdFocus = false;
   var lastErr = '';
+  var audioN = 0;          /* audio tracks seen on the current file (0 = API absent or single) */
+  var LANG_KEY = 'torr.lang';
 
   function $(id) { return UI.$(id); }
 
@@ -76,6 +78,62 @@
     for (var i = 0; i < kids.length; i++) UI.toggleClass(kids[i], 'current', i === fileIdx);
   }
 
+  /* ---- audio tracks (HTMLMediaElement.audioTracks; webOS >= 4 exposes it for MKV/MP4) ---- */
+  var LANG_NAMES = { zh: '中文', chi: '中文', zho: '中文', cmn: '普通话', yue: '粤语', en: '英语', eng: '英语', ja: '日语', jpn: '日语',
+    ko: '韩语', kor: '韩语', fr: '法语', fra: '法语', fre: '法语', de: '德语', deu: '德语', ger: '德语', es: '西班牙语', spa: '西班牙语',
+    ru: '俄语', rus: '俄语', it: '意大利语', ita: '意大利语', th: '泰语', tha: '泰语', hi: '印地语', hin: '印地语', und: '' };
+  function audioTracks() { var t = video && video.audioTracks; return t && t.length ? t : null; }
+  function trackName(t, i) {
+    var lang = String(t.language || '').toLowerCase().split('-')[0];
+    var name = LANG_NAMES.hasOwnProperty(lang) ? LANG_NAMES[lang] : (t.language || '');
+    var label = String(t.label || '');
+    if (/^(soundhandler|stereo|surround|audio)$/i.test(label)) label = '';
+    var s = name || label || ('音轨 ' + (i + 1));
+    if (name && label && label.toLowerCase().indexOf(name.toLowerCase()) < 0) s += ' · ' + label;
+    return s;
+  }
+  function currentAudio() { var t = audioTracks(); if (!t) return -1; for (var i = 0; i < t.length; i++) if (t[i].enabled) return i; return -1; }
+  function renderAudio() {
+    var t = audioTracks(), el = $('osd-audio');
+    audioN = t ? t.length : 0;
+    if (audioN < 2) { UI.addClass(el, 'hidden'); el.textContent = ''; return; }
+    var cur = currentAudio();
+    el.textContent = '音轨 ' + (cur + 1) + '/' + audioN + ' · ' + (cur >= 0 ? trackName(t[cur], cur) : '—');
+    UI.removeClass(el, 'hidden');
+  }
+  function setAudio(i, announce) {
+    var t = audioTracks();
+    if (!t || !t[i]) return;
+    for (var k = 0; k < t.length; k++) t[k].enabled = (k === i);
+    try { window.localStorage.setItem(LANG_KEY, String(t[i].language || '').toLowerCase()); } catch (e) { /* ignore */ }
+    renderAudio();
+    if (announce) { setState('音轨：' + trackName(t[i], i)); showOsd(false); }
+  }
+  function cycleAudio() {
+    var t = audioTracks();
+    if (!t || t.length < 2) { setState(t ? '只有一条音轨' : '此文件不支持切换音轨'); showOsd(false); return; }
+    setAudio((currentAudio() + 1) % t.length, true);
+  }
+  /* On a new file: prefer the language picked last time (season packs), else leave the default. */
+  function applyPreferredAudio() {
+    var t = audioTracks();
+    if (!t || t.length < 2) { renderAudio(); return; }
+    var want = '';
+    try { want = window.localStorage.getItem(LANG_KEY) || ''; } catch (e) { /* ignore */ }
+    var cur = currentAudio();
+    if (want && !(cur >= 0 && String(t[cur].language || '').toLowerCase() === want)) {
+      for (var i = 0; i < t.length; i++) if (String(t[i].language || '').toLowerCase() === want) { for (var k = 0; k < t.length; k++) t[k].enabled = (k === i); break; }
+    }
+    renderAudio();
+  }
+  function bindAudio() {
+    var t = video.audioTracks;
+    if (!t || !t.addEventListener) return;
+    t.addEventListener('addtrack', function () { if (active) applyPreferredAudio(); }, false);
+    t.addEventListener('removetrack', function () { if (active) renderAudio(); }, false);
+    t.addEventListener('change', function () { if (active) renderAudio(); }, false);
+  }
+
   function zones() {
     App.setZones([{
       name: 'osd-eps', cols: 0, remember: true, index: fileIdx,
@@ -126,6 +184,8 @@
     lastErr = '';
     renderTitle();
     markCurrentEp();
+    audioN = 0;
+    UI.addClass($('osd-audio'), 'hidden');
     setState('加载中…');
     var url = API.streamUrl(hash, index, shortName(files[i].path));
     video.removeAttribute('src');
@@ -170,6 +230,7 @@
     $('player').addEventListener('mousemove', function () { if (active) showOsd(false); }, false);
     video.addEventListener('click', function (e) { if (active) { e.preventDefault(); togglePlay(); } }, false);
     $('osd-state').addEventListener('click', function (e) { if (active) { e.preventDefault(); togglePlay(); } }, false);
+    $('osd-audio').addEventListener('click', function (e) { if (active) { e.preventDefault(); e.stopPropagation(); cycleAudio(); } }, false);
     $('osd-bar').addEventListener('click', function (e) {
       if (!active || !isFinite(video.duration) || !video.duration) return;
       e.preventDefault(); e.stopPropagation();
@@ -191,6 +252,7 @@
       if (pendingSeek > 0 && pendingSeek < (video.duration || 1e9) - 5) { try { video.currentTime = pendingSeek; } catch (e) { /* ignore */ } }
       pendingSeek = 0;
       updateTime();
+      applyPreferredAudio();
     }, false);
     video.addEventListener('playing', function () { setState(''); startSaveTimer(); }, false);
     video.addEventListener('waiting', function () { setState('缓冲中…'); }, false);
@@ -236,6 +298,7 @@
       case 415: if (video.paused) togglePlay(); return true;
       case 19: if (!video.paused) togglePlay(); return true;
       case 10252: togglePlay(); return true;
+      case 405: cycleAudio(); return true;
       case 413: video.pause(); savePos(true); App.back(); return true;
       case 417: seekBy(60); return true;
       case 412: seekBy(-60); return true;
@@ -259,7 +322,7 @@
 
   App.register('player', {
     enter: function (params) {
-      if (!video) { video = $('video'); bindVideo(); bindPointer(); document.addEventListener('keyup', onKeyUp, false); }
+      if (!video) { video = $('video'); bindVideo(); bindAudio(); bindPointer(); document.addEventListener('keyup', onKeyUp, false); }
       active = true;
       hash = params.hash;
       title = params.title || '';
@@ -301,8 +364,12 @@
       }
       setState('');
       UI.removeClass($('osd'), 'show');
+      UI.addClass($('osd-audio'), 'hidden');
+      audioN = 0;
       osdFocus = false;
     },
+    audioTracks: function () { var t = audioTracks(), out = []; if (t) for (var i = 0; i < t.length; i++) out.push({ language: t[i].language || '', label: t[i].label || '', enabled: !!t[i].enabled, name: trackName(t[i], i) }); return out; },
+    setAudio: function (i) { setAudio(i, true); },
     key: onKey
   });
 })();
