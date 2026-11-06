@@ -30,9 +30,11 @@ var remoteIDRe = regexp.MustCompile(`^[A-Za-z0-9]{4,16}$`)
 var hashRe = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
 
 // remoteMsg is one message queued for the TV.
-//   action: "play"  -> open the player for hash/index (index = TorrServer file id, 1-based)
-//           "added" -> a torrent was added on the phone; the TV refreshes its list
-//           "text"  -> free text (reserved)
+//
+//	action: "play"  -> open the player for hash/index (index = TorrServer file id, 1-based)
+//	        "added" -> a torrent was added on the phone; the TV refreshes its list
+//	        "sub"   -> a subtitle was fetched/uploaded for hash/index; url = /subs/<hash>/<index>/<n>.vtt
+//	        "text"  -> free text (reserved)
 type remoteMsg struct {
 	Seq    int     `json:"seq"`
 	Action string  `json:"action"`
@@ -40,6 +42,7 @@ type remoteMsg struct {
 	Index  int     `json:"index,omitempty"`
 	Title  string  `json:"title,omitempty"`
 	Text   string  `json:"text,omitempty"`
+	URL    string  `json:"url,omitempty"`
 	T      float64 `json:"t"`
 }
 
@@ -260,17 +263,24 @@ func (a *App) remotePost(w http.ResponseWriter, r *http.Request, p string, body 
 	switch parts[3] {
 	case "send":
 		action := str(body["action"])
-		if action != "play" && action != "added" && action != "text" {
+		if action != "play" && action != "added" && action != "text" && action != "sub" {
 			sendError(w, r, 400, "unknown action")
 			return
 		}
 		hash := strings.ToLower(strings.TrimSpace(str(body["hash"])))
-		if (action == "play" || action == "added") && !hashRe.MatchString(hash) {
+		if (action == "play" || action == "added" || action == "sub") && !hashRe.MatchString(hash) {
 			sendError(w, r, 400, "bad hash")
 			return
 		}
 		m := remoteMsg{Action: action, Hash: hash, Index: atoi(str(body["index"]), 0),
 			Title: truncRunes(str(body["title"]), 200), Text: truncRunes(str(body["text"]), 500)}
+		if action == "sub" {
+			m.URL = str(body["url"])
+			if !strings.HasPrefix(m.URL, "/subs/") {
+				sendError(w, r, 400, "bad url")
+				return
+			}
+		}
 		seq := a.remote.send(ch, m)
 		sendJSON(w, r, 200, map[string]interface{}{"ok": true, "seq": seq})
 	case "state":

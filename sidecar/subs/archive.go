@@ -1,0 +1,147 @@
+package subs
+
+import (
+	"archive/zip"
+	"bytes"
+	"io"
+	"path"
+	"regexp"
+	"sort"
+	"strings"
+)
+
+// Entry is one subtitle file, either standalone or taken out of a zip.
+type Entry struct {
+	Name string
+	Data []byte
+}
+
+var subExtRe = regexp.MustCompile(`(?i)\.(srt|ass|ssa|vtt)$`)
+
+// IsSubtitleName reports whether the file name has a subtitle extension.
+func IsSubtitleName(n string) bool { return subExtRe.MatchString(n) }
+
+// Expand returns the subtitle files inside data: the file itself, or the .srt/.ass/.ssa/.vtt
+// members of a zip (nested directories flattened, __MACOSX junk skipped). Max 2 MB per member.
+func Expand(name string, data []byte) []Entry {
+	if bytes.HasPrefix(data, []byte("PK\x03\x04")) {
+		if zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data))); err == nil {
+			var out []Entry
+			for _, f := range zr.File {
+				base := path.Base(f.Name)
+				if !IsSubtitleName(base) || strings.HasPrefix(f.Name, "__MACOSX") || strings.HasPrefix(base, ".") || f.UncompressedSize64 > 2<<20 {
+					continue
+				}
+				rc, err := f.Open()
+				if err != nil {
+					continue
+				}
+				b, err := io.ReadAll(io.LimitReader(rc, 2<<20))
+				rc.Close()
+				if err == nil && len(b) > 0 {
+					out = append(out, Entry{Name: zipName(f), Data: b})
+				}
+			}
+			return out
+		}
+	}
+	if IsSubtitleName(name) || name == "" {
+		return []Entry{{Name: name, Data: data}}
+	}
+	// unknown extension but maybe still a subtitle (phones strip names): let the parser decide
+	return []Entry{{Name: name, Data: data}}
+}
+
+// zip member names are CP437 unless the UTF-8 flag is set; Chinese archives are usually GBK.
+func zipName(f *zip.File) string {
+	if f.NonUTF8 {
+		return path.Base(Decode([]byte(f.Name)))
+	}
+	return path.Base(f.Name)
+}
+
+// Lang tags recognised in file names and ASSRT langlist keys, in display order.
+var langLabels = []struct{ key, label string }{
+	{"chs", "简中"}, {"cht", "繁中"}, {"eng", "英文"}, {"dou", "双语"}, {"jap", "日文"}, {"kor", "韩文"},
+}
+
+var langHintRe = map[string]*regexp.Regexp{
+	"dou": regexp.MustCompile(`(?i)双语|chs&eng|cht&eng|简英|繁英|中英|zh-?en|\.ch[st]\.eng|\.eng\.ch[st]`),
+	"chs": regexp.MustCompile(`(?i)简体|简中|\bchs\b|zh-?cn|\bsc\b|\bgb\b|\.cn(\.|$)|简`),
+	"cht": regexp.MustCompile(`(?i)繁体|繁體|繁中|\bcht\b|zh-?tw|zh-?hk|\btc\b|\bbig5\b|\.(tw|hk)(\.|$)|繁`),
+	"eng": regexp.MustCompile(`(?i)\beng?\b|english|英文|英`),
+	"jap": regexp.MustCompile(`(?i)\bjpn?\b|\bjap\b|日文|日语`),
+	"kor": regexp.MustCompile(`(?i)\bkor?\b|韩文|韓文`),
+}
+
+// LangOf guesses language tags from a file name ("chs", "cht", "eng", "dou", …).
+func LangOf(name string) []string {
+	var out []string
+	for _, l := range langLabels {
+		if re := langHintRe[l.key]; re != nil && re.MatchString(name) {
+			out = append(out, l.key)
+		}
+	}
+	// "chs" also matches "chs&eng"; collapse to dou + chs so the label reads 简中 双语
+	return out
+}
+
+// LangLabel renders tags as a short Chinese label: ["chs","eng","dou"] -> "简中·英文·双语".
+func LangLabel(tags []string) string {
+	var parts []string
+	for _, l := range langLabels {
+		for _, t := range tags {
+			if t == l.key {
+				parts = append(parts, l.label)
+			}
+		}
+	}
+	return strings.Join(parts, "·")
+}
+
+// Pick chooses the best subtitle among several for a given video file name: same episode first,
+// then Simplified Chinese / bilingual, then .srt over .ass (cheaper to render), then larger file.
+func Pick(entries []Entry, videoName string) *Entry {
+	if len(entries) == 0 {
+		return nil
+	}
+	ep, hasEp := ParseEpisode(videoName)
+	scoreOf := func(e Entry) int {
+		s := 0
+		if hasEp {
+			if e2, ok := ParseEpisode(e.Name); ok && e2.Number == ep.Number && (e2.Season == ep.Season || e2.Season == 0 || ep.Season == 0) {
+				s += 1000
+			} else if ok {
+				s -= 1000
+			}
+		}
+		for _, t := range LangOf(e.Name) {
+			switch t {
+			case "chs":
+				s += 100
+			case "dou":
+				s += 80
+			case "cht":
+				s += 40
+			case "eng":
+				s += 10
+			}
+		}
+		if strings.HasSuffix(strings.ToLower(e.Name), ".srt") {
+			s += 5
+		}
+		return s
+	}
+	idx := make([]int, len(entries))
+	for i := range idx {
+		idx[i] = i
+	}
+	sort.SliceStable(idx, func(a, b int) bool {
+		sa, sb := scoreOf(entries[idx[a]]), scoreOf(entries[idx[b]])
+		if sa != sb {
+			return sa > sb
+		}
+		return len(entries[idx[a]].Data) > len(entries[idx[b]].Data)
+	})
+	return &entries[idx[0]]
+}

@@ -13,9 +13,10 @@ import (
 type App struct {
 	cfg    Config
 	remote *Remote
+	subs   *Subs
 }
 
-func newApp(cfg Config) *App { return &App{cfg: cfg, remote: newRemote()} }
+func newApp(cfg Config) *App { return &App{cfg: cfg, remote: newRemote(), subs: newSubs(cfg)} }
 
 // ---------------------------------------------------------------- response helpers
 
@@ -142,19 +143,25 @@ func (a *App) get(w http.ResponseWriter, r *http.Request, p string) {
 	case p == "/tv" || strings.HasPrefix(p, "/tv/"):
 		a.serveApp(w, r, strings.TrimPrefix(p, "/tv"))
 	case p == "/config":
-		sendJSON(w, r, 200, map[string]string{"torrserver": a.cfg.TorrServer})
+		sendJSON(w, r, 200, map[string]interface{}{"torrserver": a.cfg.TorrServer, "subs": a.subs.configInfo()})
 	case p == "/health":
 		sendJSON(w, r, 200, map[string]interface{}{"ok": true, "channels": a.remote.count()})
 	case strings.HasPrefix(p, "/r/"):
 		a.servePhonePage(w, r, strings.TrimPrefix(p, "/r/"))
 	case strings.HasPrefix(p, "/remote/"):
 		a.remoteGet(w, r, p)
+	case strings.HasPrefix(p, "/subs/"):
+		a.subsGet(w, r, p)
 	default:
 		sendError(w, r, 404, "not found")
 	}
 }
 
 func (a *App) post(w http.ResponseWriter, r *http.Request, p string) {
+	if strings.HasPrefix(p, "/subs/") {
+		a.subsPost(w, r, p) // reads its own body (upload is raw bytes)
+		return
+	}
 	body, err := readJSONBody(r)
 	if err != nil {
 		sendError(w, r, 400, "bad JSON body")

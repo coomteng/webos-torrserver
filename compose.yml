@@ -23,5 +23,9 @@ services:
     environment:
       TORR_SERVER: ${TORR_PUBLIC:-http://192.168.0.9}:8090   # what the TV/phone will call
       TZ: ${TZ:-Europe/Zurich}
+      TORR_SUBS_DIR: /data/subs                                # external subtitles (converted to VTT)
+      ASSRT_TOKEN: ${ASSRT_TOKEN:-}                            # assrt.net token enables subtitle search
+    volumes:
+      - ${TORR_SUBS:-./data/subs}:/data/subs
     depends_on:
       - torrserver

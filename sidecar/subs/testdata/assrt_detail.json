@@ -1,0 +1,30 @@
+{
+ "sub": {
+  "action": "detail",
+  "subs": [
+   {
+    "size": 890,
+    "native_name": "",
+    "upload_time": "2011-03-11 02:36:04",
+    "down_count": 162,
+    "view_count": 1183,
+    "url": "http://file1.assrt.net/download/173817/2010_Sintel_UTF_8_tw.rar?_=1793986730&-=4e88bfedbbd2eb9b961f07682f2bc7ff&api=1",
+    "filelist": [
+     {
+      "url": "http://file1.assrt.net/onthefly/173817/-/1/2010.Sintel.UTF-8.tw.srt?_=1793986730&-=87c2553b29f7265276be357e9d4777e9&api=1",
+      "f": "2010.Sintel.UTF-8.tw.srt",
+      "s": "1KB"
+     }
+    ],
+    "id": 173817,
+    "filename": "2010_Sintel_UTF_8_tw.rar",
+    "vote_score": 0,
+    "subtype": "Subrip(srt)",
+    "title": "/2010.Sintel.UTF-8.tw",
+    "videoname": "2010.Sintel.UTF-8.tw"
+   }
+  ],
+  "result": "succeed"
+ },
+ "status": 0
+}

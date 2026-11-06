@@ -9,6 +9,8 @@
 //   - /r/<id>: the phone page (paste a magnet, "cache" or "watch").
 //   - /tv/ and /sim: static hosting of the TV app and the browser simulator, plus /config
 //     so both know where TorrServer lives.
+//   - /subs/*: external subtitles — search on assrt.net, download, convert anything to WebVTT,
+//     keep it on disk per torrent file (see subs_handlers.go). Optional (TORR_SUBS_DIR).
 package main
 
 import (
@@ -29,6 +31,8 @@ type Config struct {
 	AppDir     string
 	SimFile    string
 	Verbose    bool
+	SubsDir    string // where converted subtitles live; empty disables /subs/*
+	AssrtToken string // assrt.net API token (free account); empty disables search
 }
 
 func loadConfig() Config {
@@ -45,6 +49,8 @@ func loadConfig() Config {
 		AppDir:     os.Getenv("TORR_APP_DIR"),
 		SimFile:    os.Getenv("TORR_SIM"),
 		Verbose:    os.Getenv("TORR_VERBOSE") != "",
+		SubsDir:    os.Getenv("TORR_SUBS_DIR"),
+		AssrtToken: strings.TrimSpace(os.Getenv("ASSRT_TOKEN")),
 	}
 }
 
@@ -61,7 +67,7 @@ func main() {
 		// no WriteTimeout: /remote/<id>/poll holds connections for up to 25 s
 		IdleTimeout: 120 * time.Second,
 	}
-	log.Printf("listening on %s, TorrServer at %s", addr, cfg.TorrServer)
+	log.Printf("listening on %s, TorrServer at %s, subtitles: dir=%q sources=%v", addr, cfg.TorrServer, cfg.SubsDir, app.subs.sourceNames())
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatal(err)

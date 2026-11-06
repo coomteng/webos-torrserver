@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,6 +11,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/transform"
+
+	"torr-remote/subs"
 )
 
 func newTestApp(t *testing.T) (*App, *httptest.Server) {
@@ -160,5 +166,156 @@ func TestStaticAndConfig(t *testing.T) {
 	r, _ = http.Get(srv.URL + "/health")
 	if r.StatusCode != 200 {
 		t.Fatalf("health: %d", r.StatusCode)
+	}
+}
+
+// ---------------------------------------------------------------- subtitles
+
+func newSubsTestApp(t *testing.T) (*App, *httptest.Server, *httptest.Server) {
+	t.Helper()
+	search, _ := os.ReadFile("subs/testdata/assrt_search.json")
+	detail, _ := os.ReadFile("subs/testdata/assrt_detail.json")
+	const srt = "1\n00:00:01,000 --> 00:00:02,000\n你好\n\n2\n00:00:03,000 --> 00:00:04,000\nworld\n"
+	var fake *httptest.Server
+	fake = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/sub/search":
+			w.Write(search)
+		case "/v1/sub/detail":
+			// rewrite the CDN urls in the recorded detail to point at this fake
+			w.Write(bytes.ReplaceAll(detail, []byte("http://file1.assrt.net"), []byte(fake.URL)))
+		default:
+			if strings.HasSuffix(r.URL.Path, ".srt") {
+				w.Write([]byte(srt))
+				return
+			}
+			w.WriteHeader(404)
+		}
+	}))
+	t.Cleanup(fake.Close)
+	dir := t.TempDir()
+	app := newApp(Config{TorrServer: "http://ts.example:8090", AppDir: dir, SubsDir: filepath.Join(dir, "subs"), AssrtToken: "tok"})
+	a := app.subs.sources["assrt"].(*subs.ASSRT)
+	a.Base = fake.URL + "/v1"
+	a.Spacing = time.Millisecond
+	srv := httptest.NewServer(app.routes())
+	t.Cleanup(srv.Close)
+	return app, srv, fake
+}
+
+func getJSON(t *testing.T, url string) (*http.Response, map[string]interface{}) {
+	t.Helper()
+	resp, err := http.Get(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]interface{}
+	json.NewDecoder(resp.Body).Decode(&m)
+	resp.Body.Close()
+	return resp, m
+}
+
+func TestSubsSearchFetchListVTT(t *testing.T) {
+	_, srv, _ := newSubsTestApp(t)
+	hash := "0123456789abcdef0123456789abcdef01234567"
+
+	_, cfg := getJSON(t, srv.URL+"/config")
+	if sc, _ := cfg["subs"].(map[string]interface{}); sc == nil || sc["enabled"] != true {
+		t.Fatalf("/config subs: %v", cfg["subs"])
+	}
+
+	resp, m := getJSON(t, srv.URL+"/subs/search?file=Sintel.2010.1080p.x264-GRP.mkv")
+	if resp.StatusCode != 200 || m["query"] != "Sintel 2010" {
+		t.Fatalf("search: %d %v", resp.StatusCode, m)
+	}
+	results := m["results"].([]interface{})
+	if len(results) != 4 {
+		t.Fatalf("results %d", len(results))
+	}
+	first := results[0].(map[string]interface{})
+
+	resp, m = postJSON(t, srv.URL+"/subs/fetch", map[string]interface{}{"hash": hash, "index": 1, "src": "assrt", "id": first["id"], "video": "Sintel.mkv"})
+	if resp.StatusCode != 200 {
+		t.Fatalf("fetch: %d %v", resp.StatusCode, m)
+	}
+	sub := m["sub"].(map[string]interface{})
+	if sub["url"] != "/subs/"+hash+"/1/1.vtt" || sub["cues"].(float64) != 2 || sub["src"] != "assrt" {
+		t.Fatalf("fetched sub: %v", sub)
+	}
+
+	_, m = getJSON(t, srv.URL+"/subs/list?hash="+hash+"&index=1")
+	if l := m["subs"].([]interface{}); len(l) != 1 {
+		t.Fatalf("list: %v", m)
+	}
+	vresp, err := http.Get(srv.URL + sub["url"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(vresp.Body)
+	if vresp.StatusCode != 200 || !strings.HasPrefix(vresp.Header.Get("Content-Type"), "text/vtt") || !strings.Contains(string(body), "00:00:01.000 --> 00:00:02.000\n你好") {
+		t.Fatalf("vtt: %d %s %q", vresp.StatusCode, vresp.Header.Get("Content-Type"), body)
+	}
+
+	// upload a GBK srt as raw body
+	gbk, _, _ := transform.Bytes(simplifiedchinese.GBK.NewEncoder(), []byte("1\n00:00:05,000 --> 00:00:06,000\n上传的字幕\n"))
+	up, err := http.Post(srv.URL+"/subs/upload?hash="+hash+"&index=1&name=my.chs.srt", "application/octet-stream", bytes.NewReader(gbk))
+	if err != nil {
+		t.Fatal(err)
+	}
+	json.NewDecoder(up.Body).Decode(&m)
+	up.Body.Close()
+	sub2 := m["sub"].(map[string]interface{})
+	if up.StatusCode != 200 || sub2["n"].(float64) != 2 || sub2["label"] != "简中" || sub2["src"] != "upload" {
+		t.Fatalf("upload: %d %v", up.StatusCode, m)
+	}
+	v2, _ := http.Get(srv.URL + sub2["url"].(string))
+	b2, _ := io.ReadAll(v2.Body)
+	if !strings.Contains(string(b2), "上传的字幕") {
+		t.Fatalf("GBK upload not decoded: %q", b2)
+	}
+
+	// delete #1, list has only #2
+	resp, _ = postJSON(t, srv.URL+"/subs/delete", map[string]interface{}{"hash": hash, "index": 1, "n": 1})
+	_, m = getJSON(t, srv.URL+"/subs/list?hash="+hash+"&index=1")
+	if l := m["subs"].([]interface{}); resp.StatusCode != 200 || len(l) != 1 || l[0].(map[string]interface{})["n"].(float64) != 2 {
+		t.Fatalf("after delete: %v", m)
+	}
+	if r, _ := http.Get(srv.URL + "/subs/" + hash + "/1/1.vtt"); r.StatusCode != 404 {
+		t.Fatalf("deleted vtt still served: %d", r.StatusCode)
+	}
+
+	// bad inputs
+	if r, _ := http.Get(srv.URL + "/subs/list?hash=zz&index=1"); r.StatusCode != 400 {
+		t.Fatalf("bad hash accepted: %d", r.StatusCode)
+	}
+	if r, _ := http.Post(srv.URL+"/subs/upload?hash="+hash+"&index=1&name=x.srt", "text/plain", strings.NewReader("<html>")); r.StatusCode != 400 {
+		t.Fatalf("garbage upload accepted: %d", r.StatusCode)
+	}
+}
+
+func TestRemoteSubAction(t *testing.T) {
+	_, srv := newTestApp(t)
+	_, m := postJSON(t, srv.URL+"/remote/new", map[string]string{})
+	id := m["id"].(string)
+	hash := "0123456789abcdef0123456789abcdef01234567"
+	resp, _ := postJSON(t, srv.URL+"/remote/"+id+"/send", map[string]interface{}{"action": "sub", "hash": hash, "index": 1, "url": "http://evil/x.vtt"})
+	if resp.StatusCode != 400 {
+		t.Fatalf("foreign url accepted: %d", resp.StatusCode)
+	}
+	resp, _ = postJSON(t, srv.URL+"/remote/"+id+"/send", map[string]interface{}{"action": "sub", "hash": hash, "index": 1, "url": "/subs/" + hash + "/1/1.vtt", "title": "简中"})
+	if resp.StatusCode != 200 {
+		t.Fatalf("sub send: %d", resp.StatusCode)
+	}
+	_, p := getJSON(t, srv.URL+"/remote/"+id+"/poll?since=0")
+	msgs := p["messages"].([]interface{})
+	if len(msgs) != 1 || msgs[0].(map[string]interface{})["action"] != "sub" || msgs[0].(map[string]interface{})["url"] != "/subs/"+hash+"/1/1.vtt" {
+		t.Fatalf("poll: %v", p)
+	}
+}
+
+func TestSubsDisabled(t *testing.T) {
+	_, srv := newTestApp(t)
+	if r, _ := http.Get(srv.URL + "/subs/search?q=x"); r.StatusCode != 404 {
+		t.Fatalf("expected 404 when disabled, got %d", r.StatusCode)
 	}
 }
