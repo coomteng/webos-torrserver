@@ -60,7 +60,11 @@ func (s *Subs) sourceNames() []string {
 }
 
 func (s *Subs) configInfo() map[string]interface{} {
-	return map[string]interface{}{"enabled": s.enabled(), "sources": s.sourceNames()}
+	names := s.sourceNames()
+	if names == nil {
+		names = []string{}
+	}
+	return map[string]interface{}{"enabled": s.enabled(), "sources": names}
 }
 
 func withURL(rec subs.Saved, hash string, index int) subs.Saved {

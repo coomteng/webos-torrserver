@@ -26,17 +26,18 @@ serves the static pages. TorrServer stays stock.
 
 | dir | what |
 | --- | --- |
-| `sidecar/` | Go, stdlib + `skip2/go-qrcode`. `/remote/*` channel, `/r/<id>` phone page, `/tv/` app hosting, `/sim` browser simulator, `/config`. |
+| `sidecar/` | Go, stdlib + `skip2/go-qrcode` + `x/text`. `/remote/*` channel, `/r/<id>` phone page, `/tv/` app hosting, `/sim` browser simulator, `/config`, `/subs/*` external subtitles (`sidecar/subs/`). |
 | `app/` | TV app. No build step, ES5 only (`tools/es5check.sh`). `nav.js` (focus + Magic Remote pointer) is copied from [moontv-webos](https://github.com/coomteng/moontv-webos). |
 | `sim/` | 1920×1080 iframe + on-screen remote for desktop testing. |
 | `test/walk.js` | Headless end-to-end walk against a live sidecar + TorrServer (puppeteer-core). |
 | `test/audio.js` | Self-contained headless check of audio-track switching (ffmpeg fixture + fake TorrServer). |
+| `test/subs.js` | Headless check of external subtitles: real sidecar binary + fake assrt.net + fake TorrServer. |
 | `compose.yml` | TorrServer + sidecar as one stack. |
 
 ## Run the server side
 
 ```sh
-TORR_PUBLIC=http://192.168.0.9 docker compose up -d
+TORR_PUBLIC=http://192.168.0.9 ASSRT_TOKEN=<your assrt.net token> docker compose up -d
 ```
 
 Then open `http://<host>:8090` once and set TorrServer to cache on disk (Settings → *Use disk*,
@@ -62,7 +63,8 @@ Developer Mode / `ares-setup-device` notes are the same as for moontv-webos.
 | --- | --- |
 | home | OK open · ↑↓ move · red ×2 delete from TorrServer · green refresh · blue big QR |
 | files | OK play (resumes if watched before) · green refresh |
-| player | OK play/pause · ←→ ±10 s (hold to repeat) · ↑↓ file strip · yellow next audio track · ⏪⏩ ±60 s · Back exit |
+| player | OK play/pause · ←→ ±10 s (hold to repeat) · ↑↓ file strip · green subtitles · yellow next audio track · ⏪⏩ ±60 s · Back exit |
+| subtitle panel | ↑↓ choose · OK apply · ←→ delay ∓0.5 s · green/Back close |
 
 Magic Remote: hover focuses, click activates, wheel scrolls / seeks, click on the seek bar seeks.
 
@@ -76,6 +78,14 @@ Magic Remote: hover focuses, click activates, wheel scrolls / seeks, click on th
 - Audio tracks: multi-audio MKV/MP4 show a `♪ 音轨 n/N · 语言` badge in the OSD; the yellow key (or clicking the badge)
   cycles `video.audioTracks[i].enabled`. The chosen language is remembered (`torr.lang`) and auto-selected for the next
   file. Needs `HTMLMediaElement.audioTracks` — webOS ≥ 4 has it; desktop Chrome only with `--enable-blink-features=AudioVideoTracks`.
+- External subtitles: the green key opens a panel with the subtitles already stored for this file, an online
+  search (assrt.net / 射手网伪, query derived from the release name) and a delay adjuster. The sidecar downloads
+  the chosen file, decodes GBK/Big5/UTF-16, converts SRT/ASS (and zips of them) to WebVTT and keeps it under
+  `TORR_SUBS_DIR/<hash>/<index>/`; the TV fetches the `.vtt` and draws cues itself (no `<track>`: unreliable on the
+  webOS video plane, and we want delay + bilingual stacking). The phone page has a 字幕 button per file for the same
+  search plus uploading a local `.srt/.ass/.zip`; the TV loads it immediately if it is playing that file. The choice
+  (or "off") and the delay are remembered per file in `localStorage` (`torr.sub.<hash>`). Needs `ASSRT_TOKEN`
+  (free account at assrt.net; the quota is ~5 requests/min, the sidecar spaces calls 15 s apart and caches searches).
 - Resume positions live in the TV's `localStorage` (`torr.pos.<hash>`), since TorrServer's own
   `TrackTimecode` is off by default.
 

@@ -305,5 +305,7 @@ func (a *App) servePhonePage(w http.ResponseWriter, r *http.Request, id string) 
 	tsJSON, _ := json.Marshal(a.cfg.TorrServer)
 	page := strings.Replace(phonePage, "__ID__", string(idJSON), 1)
 	page = strings.Replace(page, "__TS__", string(tsJSON), 1)
+	subsJSON := marshal(a.subs.configInfo())
+	page = strings.Replace(page, "__SUBS__", string(subsJSON), 1)
 	send(w, r, 200, []byte(page), "text/html; charset=utf-8", 0)
 }

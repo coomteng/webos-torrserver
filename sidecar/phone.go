@@ -33,6 +33,18 @@ h2{font-size:15px;color:#8f94a3;margin:26px 0 8px;font-weight:600}
 .f .fs{color:#6d7282;font-size:12px;flex:none}
 .f button{flex:none;background:#fad778;color:#111;padding:6px 12px;font-size:13px;border-radius:8px}
 .empty{color:#4f5466;font-size:14px;padding:20px 0;text-align:center}
+.f button.sub{background:#2a2f40;color:#e8e8ec}
+.sp{background:#0f1117;border:1px solid #2a2f40;border-radius:10px;padding:10px;margin:4px 0 8px}
+.sp .q{display:flex;gap:8px}.sp input[type=text]{flex:1;min-width:0;font-size:14px;padding:8px 10px;border-radius:8px;border:1px solid #2a2f40;background:#1a1d28;color:#fff}
+.sp .q button{flex:none;background:#fad778;color:#111;padding:8px 12px;font-size:13px;border-radius:8px}
+.sp .r{display:flex;align-items:center;gap:8px;padding:7px 0;border-top:1px solid #1f2330;font-size:13px}
+.sp .r .rn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#d6d9e2}
+.sp .r .tag{flex:none;font-size:11px;color:#fad778;border:1px solid rgba(250,215,120,.5);border-radius:5px;padding:0 5px;line-height:18px}
+.sp .r button{flex:none;background:#2a2f40;color:#e8e8ec;padding:5px 10px;font-size:12px;border-radius:7px}
+.sp .r.cur .rn{color:#fad778}
+.sp .m{font-size:12px;color:#8f94a3;margin-top:6px;min-height:14px}.sp .m.err{color:#ff8a80}
+.sp .up{display:block;margin-top:8px;font-size:12px;color:#8f94a3}.sp .up input{display:none}
+.sp .up span{display:inline-block;border:1px dashed #2a2f40;border-radius:8px;padding:6px 10px}
 </style></head><body>
 <h1>电视磁力</h1><div id="ctx">连接中…</div>
 <textarea id="t" placeholder="粘贴 magnet:?xt=urn:btih:… 、40 位 infohash 或 .torrent 链接" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
@@ -83,6 +95,31 @@ function wake(hash){return ts('/torrents',{action:'add',link:hash,save_to_db:tru
 function playFile(hash,id,title){tell({action:'play',hash:hash,index:id,title:title}).then(function(){msg('已发送到电视 ✓')},function(e){msg(e.message,1)})}
 function del(hash,title){if(!confirm('从电视删除「'+title+'」？'))return;ts('/torrents',{action:'rem',hash:hash}).then(function(){tell({action:'added',hash:hash}).catch(function(){});load()},function(e){msg(e.message,1)})}
 function toggle(hash){open[hash]=!open[hash];load()}
+/* ---- external subtitles (sidecar /subs/*) ---- */
+var SUBS=__SUBS__; /* {enabled, sources} */
+var subOpen={}, subState={}, loadForced=false; /* key hash:id -> {saved,results,msg,err,q,busy} */
+function skey(h,id){return h+':'+id}
+function sget(h,id){var k=skey(h,id);if(!subState[k])subState[k]={saved:[],results:null,msg:'',err:false,q:'',busy:false};return subState[k]}
+function sapi(path,opt){return fetch(path,opt).then(function(r){return r.text().then(function(t){var j=null;try{j=t?JSON.parse(t):null}catch(e){}if(!r.ok)throw new Error((j&&j.error)||('HTTP '+r.status));return j})})}
+function subToggle(h,id,fname){var k=skey(h,id);subOpen[k]=!subOpen[k];if(subOpen[k]){var st=sget(h,id);if(!st.q)st.q=fname;sapi('/subs/list?hash='+h+'&index='+id).then(function(r){st.saved=(r&&r.subs)||[];load()},function(e){st.msg=e.message;st.err=true;load()})}load()}
+function subSearch(h,id){var st=sget(h,id);var inp=document.getElementById('sq-'+skey(h,id));var q=(inp&&inp.value)||st.q;st.q=q;if(inp)inp.blur();st.busy=true;st.err=false;st.msg='正在搜索…（字幕站限速，可能要等十几秒）';loadForced=true;load();
+  sapi('/subs/search?q='+encodeURIComponent(q)).then(function(r){st.busy=false;st.results=(r&&r.results)||[];st.msg=st.results.length?'搜索词：'+(r.query||q):'没有找到，换个关键词试试（片名 + 年份 / S01E02）';load()},function(e){st.busy=false;st.msg='搜索失败：'+e.message;st.err=true;load()})}
+function subPick(h,id,fname,title,res){var st=sget(h,id);st.busy=true;st.err=false;st.msg='正在下载并转换…';load();
+  sapi('/subs/fetch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({hash:h,index:id,src:res.src,id:res.id,video:fname})}).then(function(r){return subDone(h,id,title,r&&r.sub)}).catch(function(e){st.busy=false;st.msg='下载失败：'+e.message;st.err=true;load()})}
+function subUpload(h,id,fname,title,input){var f=input.files&&input.files[0];if(!f)return;var st=sget(h,id);st.busy=true;st.err=false;st.msg='正在上传 '+f.name+'…';load();
+  sapi('/subs/upload?hash='+h+'&index='+id+'&name='+encodeURIComponent(f.name)+'&video='+encodeURIComponent(fname),{method:'POST',body:f}).then(function(r){return subDone(h,id,title,r&&r.sub)}).catch(function(e){st.busy=false;st.msg='上传失败：'+e.message;st.err=true;load()})}
+function subDone(h,id,title,sub){var st=sget(h,id);st.busy=false;if(!sub)throw new Error('没有返回字幕');st.saved.push(sub);st.msg='已就绪：'+(sub.label||sub.name)+'（'+sub.cues+' 条）';
+  return tell({action:'sub',hash:h,index:id,url:sub.url,title:sub.label||sub.name}).then(function(){st.msg+=' · 已发送到电视 ✓';load()},function(){st.msg+=' · 电视未在线，播放时会自动加载';load()})}
+function subUse(h,id,sub){tell({action:'sub',hash:h,index:id,url:sub.url,title:sub.label||sub.name}).then(function(){var st=sget(h,id);st.msg='已发送到电视 ✓';st.err=false;load()},function(e){var st=sget(h,id);st.msg=e.message;st.err=true;load()})}
+function subPanel(h,id,fname,title){var st=sget(h,id),k=skey(h,id);var d=document.createElement('div');d.className='sp';
+  var q=document.createElement('div');q.className='q';var inp=document.createElement('input');inp.type='text';inp.id='sq-'+k;inp.value=st.q;inp.placeholder='片名 年份 / 片名 S01E02';inp.onkeydown=function(e){if(e.key==='Enter'){subSearch(h,id)}};var b=document.createElement('button');b.textContent='搜索';b.disabled=st.busy||!SUBS.sources.length;b.onclick=function(){subSearch(h,id)};q.appendChild(inp);q.appendChild(b);d.appendChild(q);
+  if(!SUBS.sources.length){var w=document.createElement('div');w.className='m err';w.textContent='服务端未配置字幕站 token（ASSRT_TOKEN），只能上传';d.appendChild(w)}
+  st.saved.forEach(function(sv){var r=document.createElement('div');r.className='r';r.innerHTML='<span class="tag"></span><span class="rn"></span><button>用这个</button>';r.children[0].textContent=sv.src==='upload'?'上传':sv.src;r.children[1].textContent=(sv.label?sv.label+' · ':'')+sv.name;r.children[2].onclick=function(){subUse(h,id,sv)};d.appendChild(r)});
+  if(st.results){if(!st.results.length){}else{var hd=document.createElement('div');hd.className='m';hd.textContent='搜索结果 '+st.results.length;d.appendChild(hd)}
+    st.results.forEach(function(res){var r=document.createElement('div');r.className='r';r.innerHTML='<span class="tag"></span><span class="rn"></span><button>下载</button>';r.children[0].textContent=res.label||res.format||res.src;r.children[1].textContent=res.title+(res.files&&res.files.length>1?'（'+res.files.length+' 个文件）':'');r.children[2].disabled=st.busy;r.children[2].onclick=function(){subPick(h,id,fname,title,res)};d.appendChild(r)})}
+  var up=document.createElement('label');up.className='up';up.innerHTML='<span>上传字幕文件（.srt / .ass / .zip）</span><input type="file" accept=".srt,.ass,.ssa,.vtt,.zip">';up.lastChild.onchange=function(){subUpload(h,id,fname,title,this)};d.appendChild(up);
+  var m=document.createElement('div');m.className='m'+(st.err?' err':'');m.textContent=st.msg;d.appendChild(m);
+  return d}
 function render(list){
   var box=$('list');box.innerHTML='';
   if(!list||!list.length){box.innerHTML='<div class="empty">电视上还没有种子。在上面粘贴磁力链接开始。</div>';return}
@@ -99,11 +136,11 @@ function render(list){
     a.children[0].disabled=t.stat===1;
     a.children[1].onclick=function(){if(vf.length){toggle(t.hash);return}wake(t.hash).then(function(){open[t.hash]=true;load()},function(e){msg(e.message,1)})};a.children[1].disabled=t.stat===1;
     a.children[2].onclick=function(){del(t.hash,t.title||t.name||t.hash)};
-    if(open[t.hash]){var fl=d.children[4];var all=(t.file_stats||[]).filter(function(f){return VIDEO.test(f.path)});all.sort(function(x,y){return x.path<y.path?-1:1});all.forEach(function(f){var r=document.createElement('div');r.className='f';r.innerHTML='<span class="fn"></span><span class="fs"></span><button>播放</button>';r.children[0].textContent=f.path.split('/').pop();r.children[1].textContent=fmtSize(f.length);r.children[2].onclick=function(){playFile(t.hash,f.id,t.title||'')};fl.appendChild(r)})}
+    if(open[t.hash]){var fl=d.children[4];var all=(t.file_stats||[]).filter(function(f){return VIDEO.test(f.path)});all.sort(function(x,y){return x.path<y.path?-1:1});all.forEach(function(f){var fname=f.path.split('/').pop();var r=document.createElement('div');r.className='f';r.innerHTML='<span class="fn"></span><span class="fs"></span>'+(SUBS.enabled?'<button class="sub">字幕</button>':'')+'<button>播放</button>';r.children[0].textContent=fname;r.children[1].textContent=fmtSize(f.length);if(SUBS.enabled){r.children[2].onclick=function(){subToggle(t.hash,f.id,fname)}}r.children[r.children.length-1].onclick=function(){playFile(t.hash,f.id,t.title||'')};fl.appendChild(r);if(SUBS.enabled&&subOpen[skey(t.hash,f.id)])fl.appendChild(subPanel(t.hash,f.id,fname,t.title||''))})}
     box.appendChild(d);
   });
 }
-function load(){ts('/torrents',{action:'list'}).then(render,function(e){$('list').innerHTML='<div class="empty">连不上 TorrServer（'+TS+'）</div>'})}
+function load(){var ae=document.activeElement;if(ae&&ae.tagName==='INPUT'&&ae.id&&ae.id.indexOf('sq-')===0){var k=ae.id.slice(3);if(subState[k])subState[k].q=ae.value;if(!loadForced){return}}loadForced=false;ts('/torrents',{action:'list'}).then(render,function(e){$('list').innerHTML='<div class="empty">连不上 TorrServer（'+TS+'）</div>'})}
 function st(){fetch('/remote/'+ID+'/state').then(function(r){return r.ok?r.json():null}).then(function(s){
   var c=$('ctx');if(!s||!s.t){c.textContent='电视应用尚未报告状态（请在电视上打开应用）';return}
   var age=Math.round(Date.now()/1000-s.t);

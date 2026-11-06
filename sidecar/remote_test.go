@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -311,6 +312,27 @@ func TestRemoteSubAction(t *testing.T) {
 	if len(msgs) != 1 || msgs[0].(map[string]interface{})["action"] != "sub" || msgs[0].(map[string]interface{})["url"] != "/subs/"+hash+"/1/1.vtt" {
 		t.Fatalf("poll: %v", p)
 	}
+}
+
+func TestPhonePageCarriesSubsConfig(t *testing.T) {
+	_, srv, _ := newSubsTestApp(t)
+	_, m := postJSON(t, srv.URL+"/remote/new", map[string]string{})
+	resp, err := http.Get(srv.URL + "/r/" + m["id"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), `var SUBS={"enabled":true,"sources":["assrt"]}`) {
+		t.Fatalf("phone page SUBS missing: %s", regexpFind(string(body), "var SUBS=[^;]*"))
+	}
+	if !strings.Contains(string(body), "上传字幕文件") || !strings.Contains(string(body), "/subs/search?q=") {
+		t.Fatal("phone page lacks subtitle UI")
+	}
+}
+
+func regexpFind(s, pat string) string {
+	m := regexp.MustCompile(pat).FindString(s)
+	return m
 }
 
 func TestSubsDisabled(t *testing.T) {
