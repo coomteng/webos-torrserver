@@ -55,7 +55,7 @@ Magic Remote：悬停聚焦、点击确认、滚轮滚动/快进快退、点进�
 - `/stream/<name>?link=<hash>&index=<n>&play` 返回 HTTP 206 分片，webOS 原生播放器靠它 seek；`index` 是 1 起的 `file_stats[].id`。
 - 多音轨 MKV/MP4 在 OSD 右上显示「♪ 音轨 n/N · 语言」，黄键（或点击徽标）循环切换 `video.audioTracks[i].enabled`；
   选过的语言记在 `torr.lang`，下一文件自动选同语言。依赖 `HTMLMediaElement.audioTracks`（webOS ≥ 4 有；桌面 Chrome 需 `--enable-blink-features=AudioVideoTracks`）。
-- 外挂字幕：绿键打开面板——本文件已有的字幕、在线搜索（射手网伪 assrt.net，搜索词由发布名自动清洗）、延时调节。
+- 外挂字幕：绿键打开面板——本文件已有的字幕（可选**两条**：第一条显示在屏幕下方、第二条在上方，比如简中 + 英文学英语；「交换上下」对调）、在线搜索（射手网伪 assrt.net，搜索词由发布名自动清洗）、延时调节。
   sidecar 负责下载、识别 GBK/Big5/UTF-16、把 SRT/ASS（含 zip 包）转成 WebVTT 存在 `TORR_SUBS_DIR/<hash>/<index>/`；
   电视取 `.vtt` 自己画（不用 `<track>`：webOS 视频硬件面上不可靠，而且要做延时和双语叠行）。手机页每个文件有「字幕」按钮，
   可搜索或上传本地 `.srt/.ass/.zip`，电视正在播该文件时立即加载。选择（含「关闭」）和延时按文件记在 `torr.sub.<hash>`。

@@ -100,6 +100,11 @@ img { -webkit-user-drag: none; }
 #subtitle.show { display: block; }
 #subtitle span { display: inline-block; background: rgba(0,0,0,0.35); padding: 4px 18px; border-radius: 8px; }
 #osd.show ~ #subtitle { bottom: 320px; }
+/* secondary subtitle (e.g. English with a Chinese primary): at the top of the screen, a bit smaller and warmer */
+#subtitle2 { position: absolute; left: 160px; right: 160px; top: 60px; text-align: center; font-size: 38px; line-height: 1.3;
+             color: #ffe9a8; text-shadow: 0 0 6px #000, 0 0 2px #000, 2px 2px 3px #000; display: none; pointer-events: none; }
+#subtitle2.show { display: block; }
+#subtitle2 span { display: inline-block; background: rgba(0,0,0,0.35); padding: 3px 16px; border-radius: 8px; }
 
 /* subtitle panel (green key) */
 #osd-subs { position: absolute; top: 80px; right: 80px; bottom: 80px; width: 720px; background: rgba(18,20,28,0.96); border: 2px solid #2a2f40;
@@ -113,6 +118,7 @@ img { -webkit-user-drag: none; }
 .sub-row .tag { display: inline-block; font-size: 20px; color: #fad778; border: 1px solid rgba(250,215,120,0.5); border-radius: 6px; padding: 0 8px;
                 line-height: 28px; margin-right: 10px; vertical-align: middle; }
 .sub-row .dim { color: #8f94a3; font-size: 22px; margin-left: 10px; }
+.sub-row .mark { display: inline-block; min-width: 64px; color: #111; background: #fad778; border-radius: 6px; font-size: 20px; line-height: 28px; text-align: center; padding: 0 6px; margin-right: 10px; vertical-align: middle; }
 .sub-row.head { background: none; color: #8f94a3; font-size: 22px; height: 44px; line-height: 44px; margin-top: 8px; }
 .sub-row.current { color: #fad778; }
 .sub-row.focus { border-color: #fad778; background: rgba(250,215,120,0.14); color: #fff; }

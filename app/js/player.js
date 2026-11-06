@@ -139,79 +139,117 @@
     t.addEventListener('change', function () { if (active) renderAudio(); }, false);
   }
 
-  /* ---- external subtitles (sidecar /subs/*, drawn by Subs) ---- */
+  /* ---- external subtitles (sidecar /subs/*, drawn by Subs) ----
+   * Two slots: primary (bottom) + secondary (top of the screen), e.g. 简中 + 英文 for language learning.
+   * Memory per file: torr.sub.<hash>[index] = { slots: [sub|null, sub|null], offset } or { off: true }. */
   function subMem() { try { return JSON.parse(window.localStorage.getItem(SUB_KEY()) || '{}') || {}; } catch (e) { return {}; } }
-  function subRemember(sub) {
-    var m = subMem();
-    if (sub) m[index] = { url: sub.url, name: sub.name || '', label: sub.label || '', offset: Subs.offset() };
-    else m[index] = { off: true };
+  function subRemember() {
+    var m = subMem(), sl = Subs.slots();
+    if (!sl[0] && !sl[1]) m[index] = { off: true };
+    else m[index] = { slots: [sl[0] ? { url: sl[0].url, name: sl[0].name, label: sl[0].label } : null, sl[1] ? { url: sl[1].url, name: sl[1].name, label: sl[1].label } : null], offset: Subs.offset() };
     try { window.localStorage.setItem(SUB_KEY(), JSON.stringify(m)); } catch (e) { /* ignore */ }
   }
+  function subName(s) { return s ? (s.label || s.name || '字幕') : ''; }
   function renderSubBadge() {
-    var el = $('osd-sub'), cur = Subs.current();
-    if (!cur) { UI.addClass(el, 'hidden'); el.textContent = ''; return; }
-    var t = cur.label || cur.name || '字幕';
+    var el = $('osd-sub'), sl = Subs.slots();
+    if (!sl[0] && !sl[1]) { UI.addClass(el, 'hidden'); el.textContent = ''; return; }
+    var t = sl[0] ? subName(sl[0]) : '';
+    if (sl[1]) t += (t ? ' + ' : '') + subName(sl[1]);
     if (Subs.offset()) t += ' ' + (Subs.offset() > 0 ? '+' : '') + (Subs.offset() / 1000).toFixed(1) + 's';
     el.textContent = t;
     UI.removeClass(el, 'hidden');
   }
-  function subUse(sub, offsetMs, announce) {
-    if (!sub) { Subs.clear(); subRemember(null); renderSubBadge(); if (announce) { setState('字幕：关闭'); showOsd(false); } return Promise.resolve(0); }
-    return Subs.load(sub, offsetMs || 0).then(function (n) {
-      if (!active || Subs.current() !== sub) return n;
-      subRemember(sub);
+  function subAnnounce() {
+    var sl = Subs.slots();
+    if (!sl[0] && !sl[1]) setState('字幕：关闭');
+    else setState('字幕：' + subName(sl[0] || sl[1]) + (sl[0] && sl[1] ? ' + ' + subName(sl[1]) : ''));
+    showOsd(false);
+  }
+  function subLoad(n, sub, announce) {
+    return Subs.load(n, sub).then(function (cnt) {
+      if (!active || Subs.current(n) !== sub) return cnt;
+      subRemember();
       renderSubBadge();
-      if (announce) { setState(n ? '字幕：' + (sub.label || sub.name || '') : '字幕文件为空'); showOsd(false); }
-      return n;
+      if (announce) { if (cnt) subAnnounce(); else { setState('字幕文件为空'); showOsd(false); } }
+      return cnt;
     }, function (err) {
+      Subs.clear(n); renderSubBadge();
       if (announce) { setState('字幕加载失败：' + err.message); showOsd(false); }
       return 0;
     });
   }
-  /* On a new file: reload what was chosen for it before; if nothing chosen yet but the sidecar has
-   * subtitles for it (phone uploaded), take the first one. */
+  function slotOf(url) { var sl = Subs.slots(); for (var i = 0; i < 2; i++) if (sl[i] && sl[i].url === url) return i; return -1; }
+  /* Toggle a subtitle: selected -> remove; else fill the first free slot; both full -> replace secondary. */
+  function subToggle(sub) {
+    var i = slotOf(sub.url);
+    if (i >= 0) {
+      Subs.clear(i);
+      if (i === 0 && Subs.current(1)) Subs.swap();   /* keep the remaining one as primary */
+      subRemember(); renderSubBadge(); subAnnounce();
+      return Promise.resolve(0);
+    }
+    var n = !Subs.current(0) ? 0 : 1;
+    return subLoad(n, sub, true);
+  }
+  function subOff() { Subs.clear(); subRemember(); renderSubBadge(); subAnnounce(); }
+  function subSetOffset(v) { Subs.setOffset(v); subRemember(); renderSubBadge(); }
+  /* On a new file: restore what was chosen before; nothing chosen yet but the sidecar has subtitles
+   * for it (phone uploaded) -> take the newest one as primary. */
   function subAutoLoad() {
-    Subs.clear(); renderSubBadge();
+    Subs.clear(); Subs.setOffset(0); renderSubBadge();
     if (!API.subsEnabled()) return;
     var m = subMem()[index];
     if (m && m.off) return;
-    if (m && m.url) { subUse({ url: m.url, name: m.name, label: m.label }, m.offset || 0, false); return; }
+    if (m && (m.slots || m.url)) {
+      var sl = m.slots || [{ url: m.url, name: m.name, label: m.label }, null];   /* 0.3.0 single-slot format */
+      Subs.setOffset(m.offset || 0);
+      if (sl[0]) subLoad(0, sl[0], false);
+      if (sl[1]) subLoad(1, sl[1], false);
+      return;
+    }
     var myIndex = index;
     API.subsList(hash, index).then(function (r) {
       if (!active || index !== myIndex || !r || !r.subs || !r.subs.length) return;
-      subUse(r.subs[r.subs.length - 1], 0, false);
+      subLoad(0, r.subs[r.subs.length - 1], false);
     }, function () {});
   }
   function onRemoteSub(ev) {
     if (!active || ev.hash !== hash || (ev.index && ev.index !== index)) return;
     UI.toast('手机：字幕 ' + (ev.title || ''));
-    subUse({ url: ev.url, name: ev.title, label: ev.title }, 0, true);
+    var sub = { url: ev.url, name: ev.title, label: ev.title };
+    if (slotOf(sub.url) >= 0) return;
+    subLoad(!Subs.current(0) ? 0 : 1, sub, true);
   }
 
   function subRow(kind, text, extra) {
     var el = UI.el('div', 'sub-row' + (kind === 'head' ? ' head' : ''), { 'data-kind': kind });
-    el.innerHTML = '';
-    if (extra && extra.tag) { var tg = UI.text('span', 'tag', extra.tag); el.appendChild(tg); }
+    if (extra && extra.mark) el.appendChild(UI.text('span', 'mark', extra.mark));
+    if (extra && extra.tag) el.appendChild(UI.text('span', 'tag', extra.tag));
     el.appendChild(document.createTextNode(text));
     if (extra && extra.dim) el.appendChild(UI.text('span', 'dim', extra.dim));
     if (extra && extra.current) UI.addClass(el, 'current');
     return el;
   }
   function subMsg(t) { $('osd-subs-msg').textContent = t || ''; }
-  function renderSubPanel(saved, focusKind) {
+  function renderSubPanel(saved, focusKind, focusUrl) {
     var list = $('osd-subs-list');
     UI.empty(list);
     var inner = UI.el('div', 'inner');
     list.appendChild(inner);
     subItems = [];
-    var cur = Subs.current();
+    var sl = Subs.slots();
+    var any = !!(sl[0] || sl[1]);
     function add(item, el) { subItems.push(item); inner.appendChild(el); }
-    add({ kind: 'off' }, subRow('off', '关闭字幕', { current: !cur }));
+    add({ kind: 'off' }, subRow('off', '关闭字幕', { current: !any }));
+    if (saved.length) add({ kind: 'head' }, subRow('head', any && sl[0] && sl[1] ? '已选两条（下 + 上）· 再按一次取消' : '可选两条：第一条在下、第二条在上'));
     for (var i = 0; i < saved.length; i++) {
-      var sv = saved[i];
-      add({ kind: 'saved', sub: sv }, subRow('saved', sv.label || sv.name, { tag: sv.src === 'upload' ? '上传' : sv.src, dim: sv.name && sv.label ? sv.name : (sv.cues + ' 条'), current: !!cur && cur.url === sv.url }));
+      var sv = saved[i], si = slotOf(sv.url);
+      add({ kind: 'saved', sub: sv }, subRow('saved', sv.label || sv.name, {
+        mark: si === 0 ? '① 下' : si === 1 ? '② 上' : '',
+        tag: sv.src === 'upload' ? '上传' : sv.src, dim: sv.name && sv.label ? sv.name : (sv.cues + ' 条'), current: si >= 0 }));
     }
-    if (cur) {
+    if (any) {
+      if (sl[0] && sl[1]) add({ kind: 'swap' }, subRow('swap', '交换上下', { dim: subName(sl[0]) + ' ⇄ ' + subName(sl[1]) }));
       add({ kind: 'delay-' }, subRow('delay-', '字幕提前 0.5 秒', { dim: '当前 ' + (Subs.offset() / 1000).toFixed(1) + 's' }));
       add({ kind: 'delay+' }, subRow('delay+', '字幕延后 0.5 秒'));
     }
@@ -219,32 +257,40 @@
       add({ kind: 'search' }, subRow('search', subResults ? '重新搜索字幕' : '在线搜索字幕', { dim: shortName(current() ? current().path : '') }));
     }
     if (subResults) {
-      add({ kind: 'head' }, subRow('head', subResults.length ? '搜索结果（' + subResults.length + '）' : '没有找到字幕'));
+      add({ kind: 'head' }, subRow('head', subResults.length ? '搜索结果（' + subResults.length + '）· 下载后在上面选' : '没有找到字幕'));
       for (var k = 0; k < subResults.length; k++) {
         var r = subResults[k];
         add({ kind: 'result', res: r }, subRow('result', r.title, { tag: r.label || r.format || r.src, dim: r.files && r.files.length > 1 ? r.files.length + ' 个文件' : (r.format || '') }));
       }
     }
     var start = 0;
-    for (var j = 0; j < subItems.length; j++) if (subItems[j].kind === focusKind) { start = j; break; }
+    for (var j = 0; j < subItems.length; j++) {
+      if (focusUrl && subItems[j].kind === 'saved' && subItems[j].sub.url === focusUrl) { start = j; break; }
+      if (!focusUrl && subItems[j].kind === focusKind) { start = j; break; }
+    }
     App.setZones([{
       name: 'subs', cols: 1, remember: false, index: start,
       getItems: function () { var out = [], kids = inner.children; for (var q = 0; q < kids.length; q++) if (!UI.hasClass(kids[q], 'head')) out.push(kids[q]); return out; },
       onFocus: function (el) { Nav.scrollY(inner, el, list.clientHeight || 760, 8, 8); },
       onEnter: function (el) { subActivate(el); }
     }], 0);
-    Nav.focusZone(0, start >= 0 ? indexInZone(inner, start) : 0);
+    Nav.focusZone(0, indexInZone(start));
   }
-  function indexInZone(inner, itemIdx) { var n = 0; for (var i = 0; i < itemIdx; i++) if (subItems[i].kind !== 'head') n++; return n; }
+  function indexInZone(itemIdx) { var n = 0; for (var i = 0; i < itemIdx; i++) if (subItems[i].kind !== 'head') n++; return n; }
   function itemOf(el) { var kids = $('osd-subs-list').firstChild.children; for (var i = 0; i < kids.length; i++) if (kids[i] === el) return subItems[i]; return null; }
+  var subSaved = [];   /* last /subs/list for the panel */
   function subActivate(el) {
     var it = itemOf(el);
     if (!it || subBusy) return;
     switch (it.kind) {
-      case 'off': subUse(null, 0, true); closeSubPanel(); break;
-      case 'saved': subUse(it.sub, 0, true); closeSubPanel(); break;
-      case 'delay-': Subs.setOffset(Subs.offset() - 500); subRemember(Subs.current()); renderSubBadge(); openSubPanel('delay-'); break;
-      case 'delay+': Subs.setOffset(Subs.offset() + 500); subRemember(Subs.current()); renderSubBadge(); openSubPanel('delay+'); break;
+      case 'off': subOff(); closeSubPanel(); break;
+      case 'saved':
+        subBusy = true;
+        subToggle(it.sub).then(function () { subBusy = false; if (subPanel) renderSubPanel(subSaved, 'saved', it.sub.url); }, function () { subBusy = false; });
+        break;
+      case 'swap': Subs.swap(); subRemember(); renderSubBadge(); subAnnounce(); renderSubPanel(subSaved, 'swap'); break;
+      case 'delay-': subSetOffset(Subs.offset() - 500); renderSubPanel(subSaved, 'delay-'); break;
+      case 'delay+': subSetOffset(Subs.offset() + 500); renderSubPanel(subSaved, 'delay+'); break;
       case 'search': subSearch(); break;
       case 'result': subPick(it.res); break;
     }
@@ -260,13 +306,15 @@
       if (!subPanel || index !== myIndex) return;
       subResults = (r && r.results) || [];
       subMsg(r && r.query ? '搜索词：' + r.query + (r.errors && r.errors.length ? ' · ' + r.errors.join('; ') : '') : '');
-      openSubPanel(subResults.length ? 'result' : 'search');
+      renderSubPanel(subSaved, subResults.length ? 'result' : 'search');
     }, function (err) {
       subBusy = false;
       if (!subPanel) return;
       subMsg('搜索失败：' + err.message);
     });
   }
+  /* Download a result: it becomes a saved subtitle and is selected (first free slot). Panel stays
+   * open so a second language can be picked right away. */
   function subPick(res) {
     var f = current();
     subBusy = true;
@@ -275,8 +323,11 @@
     API.subsFetch(hash, index, res, f ? shortName(f.path) : '').then(function (r) {
       subBusy = false;
       if (index !== myIndex || !r || !r.sub) return;
-      subUse(r.sub, 0, true);
-      closeSubPanel();
+      subSaved.push(r.sub);
+      if (slotOf(r.sub.url) < 0) {
+        var n = !Subs.current(0) ? 0 : (!Subs.current(1) ? 1 : 1);
+        subLoad(n, r.sub, true).then(function () { if (subPanel) { subMsg('已加入：' + subName(r.sub) + (Subs.slots()[1] ? '' : ' · 还可以再选一条做第二字幕')); renderSubPanel(subSaved, 'saved', r.sub.url); } });
+      } else if (subPanel) renderSubPanel(subSaved, 'saved', r.sub.url);
     }, function (err) {
       subBusy = false;
       if (subPanel) subMsg('下载失败：' + err.message);
@@ -291,10 +342,11 @@
     UI.removeClass($('osd-subs'), 'hidden');
     showOsd(true);
     if (!focusKind) subMsg('');
-    renderSubPanel([], focusKind || 'off');
+    renderSubPanel(subSaved, focusKind || 'off');
     API.subsList(hash, index).then(function (r) {
       if (!subPanel) return;
-      renderSubPanel((r && r.subs) || [], focusKind || (Subs.current() ? 'saved' : 'off'));
+      subSaved = (r && r.subs) || [];
+      renderSubPanel(subSaved, focusKind || (Subs.active() ? 'saved' : 'off'), focusKind ? '' : (Subs.slots()[0] || {}).url);
     }, function (err) { if (subPanel) subMsg('读取已有字幕失败：' + err.message); });
   }
   function closeSubPanel() {
@@ -358,6 +410,7 @@
     audioN = 0;
     UI.addClass($('osd-audio'), 'hidden');
     subResults = null;
+    subSaved = [];
     if (subPanel) closeSubPanel();
     subAutoLoad();
     setState('加载中…');
@@ -461,8 +514,8 @@
     if (subPanel) {
       switch (code) {
         case 38: case 40: case 13: showOsd(true); return Nav.handleKey(code);
-        case 37: if (Subs.current()) { Subs.setOffset(Subs.offset() - 500); subRemember(Subs.current()); renderSubBadge(); openSubPanel(focusedSubKind()); } return true;
-        case 39: if (Subs.current()) { Subs.setOffset(Subs.offset() + 500); subRemember(Subs.current()); renderSubBadge(); openSubPanel(focusedSubKind()); } return true;
+        case 37: if (Subs.active()) { subSetOffset(Subs.offset() - 500); renderSubPanel(subSaved, focusedSubKind(), focusedSubUrl()); } return true;
+        case 39: if (Subs.active()) { subSetOffset(Subs.offset() + 500); renderSubPanel(subSaved, focusedSubKind(), focusedSubUrl()); } return true;
         case 404: case 461: case 27: closeSubPanel(); return true;
       }
       return true;
@@ -492,6 +545,7 @@
     return false;
   }
   function focusedSubKind() { var c = Nav.current(); var it = c && c.el ? itemOf(c.el) : null; return it ? it.kind : 'off'; }
+  function focusedSubUrl() { var c = Nav.current(); var it = c && c.el ? itemOf(c.el) : null; return it && it.kind === 'saved' ? it.sub.url : ''; }
   function onKeyUp(e) { var code = e.keyCode || e.which; if (code === 37 || code === 39) stopSeekHold(); }
 
   /* Entering from the phone ("play" message) only carries hash+index: fetch the file list first. */
@@ -510,7 +564,7 @@
     enter: function (params) {
       if (!video) {
         video = $('video'); bindVideo(); bindAudio(); bindPointer(); document.addEventListener('keyup', onKeyUp, false);
-        Subs.attach(video, $('subtitle'));
+        Subs.attach(video, $('subtitle'), $('subtitle2'));
         App.Remote.on(function (ev) { if (ev && ev.type === 'sub') onRemoteSub(ev); });
       }
       active = true;
@@ -560,9 +614,10 @@
       Subs.clear();
       renderSubBadge();
       subResults = null;
+      subSaved = [];
       osdFocus = false;
     },
-    subtitle: function () { return { current: Subs.current(), offset: Subs.offset(), cues: Subs.count(), panel: subPanel, items: subItems.length, text: $('subtitle').textContent }; },
+    subtitle: function () { var sl = Subs.slots(); return { current: sl[0], second: sl[1], offset: Subs.offset(), cues: Subs.count(0), cues2: Subs.count(1), panel: subPanel, items: subItems.length, text: $('subtitle').textContent, text2: $('subtitle2').textContent }; },
     openSubs: function () { openSubPanel(); },
     audioTracks: function () { var t = audioTracks(), out = []; if (t) for (var i = 0; i < t.length; i++) out.push({ language: t[i].language || '', label: t[i].label || '', enabled: !!t[i].enabled, name: trackName(t[i], i) }); return out; },
     setAudio: function (i) { setAudio(i, true); },

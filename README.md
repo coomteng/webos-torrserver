@@ -78,8 +78,9 @@ Magic Remote: hover focuses, click activates, wheel scrolls / seeks, click on th
 - Audio tracks: multi-audio MKV/MP4 show a `♪ 音轨 n/N · 语言` badge in the OSD; the yellow key (or clicking the badge)
   cycles `video.audioTracks[i].enabled`. The chosen language is remembered (`torr.lang`) and auto-selected for the next
   file. Needs `HTMLMediaElement.audioTracks` — webOS ≥ 4 has it; desktop Chrome only with `--enable-blink-features=AudioVideoTracks`.
-- External subtitles: the green key opens a panel with the subtitles already stored for this file, an online
-  search (assrt.net / 射手网伪, query derived from the release name) and a delay adjuster. The sidecar downloads
+- External subtitles: the green key opens a panel with the subtitles already stored for this file (pick up to **two**:
+  the first goes to the bottom, the second to the top of the screen — e.g. 简中 + 英文 for language learning; 交换上下 swaps
+  them), an online search (assrt.net / 射手网伪, query derived from the release name) and a delay adjuster. The sidecar downloads
   the chosen file, decodes GBK/Big5/UTF-16, converts SRT/ASS (and zips of them) to WebVTT and keeps it under
   `TORR_SUBS_DIR/<hash>/<index>/`; the TV fetches the `.vtt` and draws cues itself (no `<track>`: unreliable on the
   webOS video plane, and we want delay + bilingual stacking). The phone page has a 字幕 button per file for the same

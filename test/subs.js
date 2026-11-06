@@ -22,6 +22,7 @@ const GOBIN = process.env.GO || 'go';
 
 // GBK-encoded SRT: cue 1 at 2–4 s, cue 2 at 6–8 s
 const srtText = '1\r\n00:00:02,000 --> 00:00:04,000\r\n你好，世界\r\n\r\n2\r\n00:00:06,000 --> 00:00:08,000\r\n第二句 <i>斜体</i>\r\n';
+const srtEng = '1\r\n00:00:02,000 --> 00:00:04,000\r\nHello, world\r\n\r\n2\r\n00:00:06,000 --> 00:00:08,000\r\nSecond line\r\n';
 const gbk = (() => { try { return new (require('util').TextEncoder)(); } catch (e) { return null; } })();
 function toGBK(s) {
   // Node has no GBK encoder; write via iconv if available, else UTF-8 with BOM (still exercises the path)
@@ -41,7 +42,12 @@ function fakeServers() {
       if (req.method === 'OPTIONS') { res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' }); return res.end(); }
       // ---- fake ASSRT
       if (u.pathname === '/v1/sub/search') return json(200, search);
-      if (u.pathname === '/v1/sub/detail') return json(200, detail.split('http://file1.assrt.net').join(base));
+      if (u.pathname === '/v1/sub/detail') {
+        // id 159430 (the 中英双字幕 entry) -> an English file; everything else the recorded detail
+        if (u.searchParams.get('id') === '159430') return json(200, { status: 0, sub: { subs: [{ id: 159430, filelist: [{ f: 'Sintel.2010.eng.srt', url: base + '/dl/Sintel.2010.eng.srt' }] }] } });
+        return json(200, detail.split('http://file1.assrt.net').join(base));
+      }
+      if (u.pathname.endsWith('.eng.srt')) { res.writeHead(200); return res.end(srtEng); }
       if (u.pathname.endsWith('.srt')) { res.writeHead(200, { 'Content-Type': 'application/octet-stream' }); return res.end(toGBK(srtText)); }
       // ---- fake TorrServer (the TV only needs list/get + a stream)
       if (u.pathname === '/torrents') {
@@ -79,10 +85,15 @@ async function key(page, code, wait) {
 const state = (page) => page.evaluate(() => {
   const v = document.getElementById('video'), f = document.querySelector('.focus');
   const s = App.view('player').subtitle();
-  return { t: +v.currentTime.toFixed(1), paused: v.paused, sub: s, badge: document.getElementById('osd-sub').textContent,
+  return { t: +v.currentTime.toFixed(1), paused: v.paused, sub: s, badge: document.getElementById('osd-sub').textContent, marks: Array.from(document.querySelectorAll('.sub-row .mark')).map((m) => m.textContent),
     focus: f ? f.textContent.slice(0, 30) : null, msg: document.getElementById('osd-subs-msg').textContent, state: document.getElementById('osd-state').textContent,
     rows: Array.from(document.querySelectorAll('.sub-row')).map((r) => r.textContent.slice(0, 40)) };
 });
+async function focusRow(page, re) {
+  for (let i = 0; i < 15; i++) await key(page, 38, 60);          // go to top
+  for (let i = 0; i < 20; i++) { const f = (await state(page)).focus || ''; if (re.test(f)) return true; await key(page, 40, 100); }
+  return false;
+}
 async function waitFor(page, pred, ms) {
   const until = Date.now() + (ms || 8000);
   let s;
@@ -140,8 +151,57 @@ async function waitFor(page, pred, ms) {
   await key(page, 13, 300);
   s = await waitFor(page, (x) => x.sub.current && x.sub.cues > 0, 15000);
   assert(s.sub.current && s.sub.cues === 2, 'result fetched and loaded (' + JSON.stringify(s.sub) + ')');
-  assert(!s.sub.panel, 'panel closes after picking');
+  assert(s.sub.panel, 'panel stays open after picking (so a second language can be added)');
   assert(/繁中/.test(s.badge), 'OSD badge shows the language: ' + s.badge);
+  assert(s.marks.length === 1 && /①/.test(s.marks[0]), 'saved row marked as primary ①: ' + JSON.stringify(s.marks));
+
+  // second language: pick the 中英双字幕 result (served as an English file by the fake)
+  assert(await focusRow(page, /中英双字幕/), 'focus on the second result');
+  await key(page, 13, 300);
+  s = await waitFor(page, (x) => x.sub.second && x.sub.cues2 > 0, 15000);
+  assert(s.sub.second && s.sub.cues2 === 2, 'second subtitle loaded into slot 2: ' + JSON.stringify(s.sub.second));
+  assert(/繁中 \+ 英文/.test(s.badge), 'badge shows both: ' + s.badge);
+  assert(s.marks.length === 2, 'two rows marked ① and ②: ' + JSON.stringify(s.marks));
+  assert(s.rows.some((r) => /交换上下/.test(r)), 'swap row offered when both slots are used');
+  await key(page, 404, 400); // close panel
+  await page.evaluate(() => { document.getElementById('video').currentTime = 2.5; });
+  s = await waitFor(page, (x) => /你好/.test(x.sub.text) && /Hello/.test(x.sub.text2), 3000);
+  assert(/你好，世界/.test(s.sub.text) && /Hello, world/.test(s.sub.text2), 'both languages rendered at t=2.5: ' + JSON.stringify([s.sub.text, s.sub.text2]));
+  const pos = await page.evaluate(() => { const a = document.getElementById('subtitle').getBoundingClientRect(), b = document.getElementById('subtitle2').getBoundingClientRect(); return { primaryBottom: a.bottom, secondaryBottom: b.bottom }; });
+  assert(pos.secondaryBottom < 200 && pos.primaryBottom > 600, 'secondary at the top, primary at the bottom: ' + JSON.stringify(pos));
+  await page.screenshot({ path: path.join(__dirname, 'shots', '11-two-subtitles.png') }).catch(() => {});
+
+  // swap: English becomes primary
+  await key(page, 404, 600);
+  await focusRow(page, /交换上下/);
+  await key(page, 13, 500);
+  s = await state(page);
+  assert(s.sub.current && /eng/.test(s.sub.current.name) && s.sub.second && /tw/.test(s.sub.second.name), 'swap exchanges the slots: ' + JSON.stringify([s.sub.current.name, s.sub.second.name]));
+  await key(page, 13, 500); // swap back
+  // toggle the primary off via its row -> the remaining one becomes primary
+  await focusRow(page, /①/);
+  await key(page, 13, 600);
+  s = await state(page);
+  assert(s.sub.current && /eng/.test(s.sub.current.name) && !s.sub.second, 'deselecting the primary promotes the secondary: ' + JSON.stringify(s.sub));
+  // re-select 繁中 -> goes to slot 2
+  await focusRow(page, /2010\.Sintel\.UTF-8\.tw/);
+  await key(page, 13, 600);
+  s = await waitFor(page, (x) => x.sub.second && x.sub.cues2 > 0, 5000);
+  assert(s.sub.second && /tw/.test(s.sub.second.name), 'reselected subtitle fills slot 2');
+  await key(page, 13, 600); // same row again -> deselect
+  s = await state(page);
+  assert(!s.sub.second, 'toggling a selected row removes it');
+  // put 繁中 back as the only subtitle for the remaining single-slot checks:
+  // currently eng is primary alone -> select tw (slot 2), swap, deselect eng
+  assert(await focusRow(page, /2010\.Sintel\.UTF-8\.tw/), 'focus tw row');
+  await key(page, 13, 600);
+  assert(await focusRow(page, /交换上下/), 'focus swap row');
+  await key(page, 13, 400);
+  assert(await focusRow(page, /②.*eng/), 'focus eng row (now ②)');
+  await key(page, 13, 600);
+  s = await waitFor(page, (x) => x.sub.current && /tw/.test(x.sub.current.name) && !x.sub.second, 5000);
+  assert(s.sub.current && /tw/.test(s.sub.current.name) && !s.sub.second, 'back to 繁中 only: ' + JSON.stringify([s.sub.current && s.sub.current.name, s.sub.second]));
+  await key(page, 404, 400);
 
   // text appears during 2–4 s
   await page.evaluate(() => { document.getElementById('video').currentTime = 2.5; });
@@ -173,6 +233,15 @@ async function waitFor(page, pred, ms) {
   await page.evaluate((h) => { App.view('player').leave(); App.goFresh('player', { hash: h, index: 1, title: 'Sintel' }); }, HASH);
   s = await waitFor(page, (x) => x.sub.current && x.sub.cues > 0, 8000);
   assert(s.sub.current && s.sub.offset === 1000, 'subtitle + delay restored on re-entry: ' + JSON.stringify(s.sub));
+  // add English as second again, re-enter: both restored
+  await key(page, 404, 600);
+  await focusRow(page, /eng/);
+  await key(page, 13, 600);
+  s = await waitFor(page, (x) => x.sub.second, 5000);
+  await key(page, 404, 400);
+  await page.evaluate((h) => { App.view('player').leave(); App.goFresh('player', { hash: h, index: 1, title: 'Sintel' }); }, HASH);
+  s = await waitFor(page, (x) => x.sub.current && x.sub.second && x.sub.cues > 0 && x.sub.cues2 > 0, 8000);
+  assert(s.sub.current && s.sub.second && s.sub.offset === 1000, 'both subtitles + delay restored on re-entry: ' + s.badge);
 
   // switch to file 2 (no memory, nothing saved) -> no subtitle; phone "sub" message loads one
   await page.evaluate((h) => { App.view('player').leave(); App.goFresh('player', { hash: h, index: 2, title: 'Sintel' }); }, HASH);
