@@ -116,6 +116,8 @@ var App = (function () {
         goFresh('player', { hash: m.hash, index: m.index || 0, title: m.title || '' });
       } else if (m.action === 'added') {
         notify('refresh');
+      } else if (m.action === 'sub' && m.hash && m.url) {
+        notify({ type: 'sub', hash: m.hash, index: m.index || 0, url: m.url, title: m.title || '' });
       }
     }
 

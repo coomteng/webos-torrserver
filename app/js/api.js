@@ -10,6 +10,24 @@ var API = (function () {
   var SIDECAR = fromHttp ? window.location.protocol + '//' + window.location.host : 'http://SIDECAR_HOST:8791';
   var TS = fromHttp ? '' : 'http://TORRSERVER_HOST:8090';   /* '' until /config answers */
   var DEFAULT_TIMEOUT = 20000;
+  var subsInfo = { enabled: false, sources: [] };          /* from /config */
+
+  /* plain-text GET (WebVTT) */
+  function requestText(url, timeoutMs) {
+    return new Promise(function (resolve, reject) {
+      var xhr = new XMLHttpRequest();
+      try { xhr.open('GET', url, true); } catch (e) { return reject(new Error('open failed')); }
+      xhr.timeout = timeoutMs || DEFAULT_TIMEOUT;
+      xhr.onreadystatechange = function () {
+        if (xhr.readyState !== 4) return;
+        if (xhr.status >= 200 && xhr.status < 300) resolve(xhr.responseText || '');
+        else reject(new Error(xhr.status ? 'HTTP ' + xhr.status : 'network error'));
+      };
+      xhr.ontimeout = function () { reject(new Error('timeout')); };
+      xhr.onerror = function () { reject(new Error('network error')); };
+      try { xhr.send(); } catch (e2) { reject(new Error('send failed')); }
+    });
+  }
 
   function request(method, url, body, timeoutMs) {
     return new Promise(function (resolve, reject) {
@@ -90,9 +108,21 @@ var API = (function () {
     if (!fromHttp) return Promise.resolve({ torrserver: TS });
     return request('GET', SIDECAR + '/config', null, 8000).then(function (c) {
       if (c && c.torrserver) TS = String(c.torrserver).replace(/\/+$/, '');
+      if (c && c.subs) subsInfo = c.subs;
       return c;
     });
   }
+
+  /* ---- external subtitles (sidecar /subs/*, see sidecar/subs_handlers.go) ---- */
+  function subsList(hash, index) { return request('GET', SIDECAR + '/subs/list?hash=' + hash + '&index=' + index, null, 8000); }
+  function subsSearch(file, q) {
+    return request('GET', SIDECAR + '/subs/search?' + (q ? 'q=' + encodeURIComponent(q) : 'file=' + encodeURIComponent(file)), null, 70000);
+  }
+  function subsFetch(hash, index, res, video) {
+    return request('POST', SIDECAR + '/subs/fetch', { hash: hash, index: index, src: res.src, id: res.id, video: video }, 95000);
+  }
+  function subsDelete(hash, index, n) { return request('POST', SIDECAR + '/subs/delete', { hash: hash, index: index, n: n }, 8000); }
+  function subsText(url) { return requestText(/^https?:/.test(url) ? url : SIDECAR + url, 15000); }
   function remoteNew(id) { return request('POST', SIDECAR + '/remote/new', { id: id || '' }, 8000); }
   function remotePoll(id, since) { return request('GET', SIDECAR + '/remote/' + id + '/poll?since=' + (since || 0), null, 32000); }
   function remoteState(id, st) { return request('POST', SIDECAR + '/remote/' + id + '/state', st, 8000); }
@@ -102,6 +132,8 @@ var API = (function () {
     list: list, get: get, getFull: getFull, wake: wake, add: add, remove: remove, drop: drop, viewedList: viewedList, viewedSet: viewedSet,
     streamUrl: streamUrl, echo: echo,
     config: config, remoteNew: remoteNew, remotePoll: remotePoll, remoteState: remoteState, remoteQr: remoteQr,
+    subsList: subsList, subsSearch: subsSearch, subsFetch: subsFetch, subsDelete: subsDelete, subsText: subsText,
+    subsEnabled: function () { return !!subsInfo.enabled; }, subsSources: function () { return subsInfo.sources || []; },
     torrServer: function () { return TS; }, sidecar: function () { return SIDECAR; }
   };
 })();

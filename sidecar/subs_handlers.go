@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -36,7 +37,14 @@ func newSubs(cfg Config) *Subs {
 		s.store = subs.NewStore(cfg.SubsDir)
 	}
 	if cfg.AssrtToken != "" {
-		s.sources["assrt"] = subs.NewASSRT(cfg.AssrtToken)
+		a := subs.NewASSRT(cfg.AssrtToken)
+		if b := os.Getenv("ASSRT_BASE"); b != "" { // tests point this at a fake
+			a.Base = strings.TrimRight(b, "/")
+		}
+		if ms, err := strconv.Atoi(os.Getenv("ASSRT_SPACING_MS")); err == nil && ms > 0 {
+			a.Spacing = time.Duration(ms) * time.Millisecond
+		}
+		s.sources["assrt"] = a
 	}
 	return s
 }
