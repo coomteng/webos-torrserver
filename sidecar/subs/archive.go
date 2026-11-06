@@ -65,11 +65,13 @@ var langLabels = []struct{ key, label string }{
 	{"chs", "简中"}, {"cht", "繁中"}, {"eng", "英文"}, {"dou", "双语"}, {"jap", "日文"}, {"kor", "韩文"},
 }
 
+// Tags are often glued to the previous token ("WEB-DLChsEng.srt"), so chs/cht match anywhere;
+// "eng" needs a boundary or CamelCase to stay clear of "Avengers".
 var langHintRe = map[string]*regexp.Regexp{
-	"dou": regexp.MustCompile(`(?i)双语|chs&eng|cht&eng|简英|繁英|中英|zh-?en|\.ch[st]\.eng|\.eng\.ch[st]`),
-	"chs": regexp.MustCompile(`(?i)简体|简中|\bchs\b|zh-?cn|\bsc\b|\bgb\b|\.cn(\.|$)|简`),
-	"cht": regexp.MustCompile(`(?i)繁体|繁體|繁中|\bcht\b|zh-?tw|zh-?hk|\btc\b|\bbig5\b|\.(tw|hk)(\.|$)|繁`),
-	"eng": regexp.MustCompile(`(?i)\beng?\b|english|英文|英`),
+	"dou": regexp.MustCompile(`(?i)双语|chs&eng|cht&eng|chs\.?eng|cht\.?eng|简英|繁英|中英|zh-?en`),
+	"chs": regexp.MustCompile(`(?i)chs|简体|简中|zh-?cn|\bsc\b|\bgb\b|\.cn(\.|$)|简`),
+	"cht": regexp.MustCompile(`(?i)cht|繁体|繁體|繁中|zh-?tw|zh-?hk|\bbig5\b|\.(tw|hk)(\.|$)|繁`),
+	"eng": regexp.MustCompile(`(?i:\beng?\b|english|英文|英)|Eng(?:[A-Z.]|$)`),
 	"jap": regexp.MustCompile(`(?i)\bjpn?\b|\bjap\b|日文|日语`),
 	"kor": regexp.MustCompile(`(?i)\bkor?\b|韩文|韓文`),
 }
@@ -100,7 +102,7 @@ func LangLabel(tags []string) string {
 }
 
 // Pick chooses the best subtitle among several for a given video file name: same episode first,
-// then Simplified Chinese / bilingual, then .srt over .ass (cheaper to render), then larger file.
+// then Simplified Chinese > bilingual > Traditional > English, then .srt over .ass, then larger file.
 func Pick(entries []Entry, videoName string) *Entry {
 	if len(entries) == 0 {
 		return nil
@@ -115,17 +117,20 @@ func Pick(entries []Entry, videoName string) *Entry {
 				s -= 1000
 			}
 		}
+		tags := map[string]bool{}
 		for _, t := range LangOf(e.Name) {
-			switch t {
-			case "chs":
-				s += 100
-			case "dou":
-				s += 80
-			case "cht":
-				s += 40
-			case "eng":
-				s += 10
-			}
+			tags[t] = true
+		}
+		switch {
+		case tags["dou"]:
+			s += 80 // bilingual files also match chs/cht; count them once, below pure Simplified
+		case tags["chs"]:
+			s += 100
+		case tags["cht"]:
+			s += 40
+		}
+		if tags["eng"] && !tags["dou"] {
+			s += 10
 		}
 		if strings.HasSuffix(strings.ToLower(e.Name), ".srt") {
 			s += 5

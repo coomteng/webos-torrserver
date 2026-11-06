@@ -153,15 +153,23 @@ func TestExpandAndPick(t *testing.T) {
 		t.Fatalf("expanded %d entries: %+v", len(es), names(es))
 	}
 	best := Pick(es, "Show.S01E02.1080p.WEB-DL.mkv")
-	if best == nil || best.Name != "Show.S01E02.chs.ass" && best.Name != "Show.S01E02.chs&eng.srt" {
+	// pure Simplified (chs.ass = 100) beats bilingual (chs&eng.srt = 80 + 5) and the wrong episode
+	if best == nil || best.Name != "Show.S01E02.chs.ass" {
 		t.Fatalf("picked %v", best)
 	}
-	// chs (100) beats dou (80); ass vs srt: chs.ass=100, chs&eng.srt=chs+dou+srt=185 -> prefer the bilingual srt
-	if best.Name != "Show.S01E02.chs&eng.srt" {
-		t.Fatalf("picked %s, want the bilingual srt", best.Name)
+	if LangLabel(LangOf("Show.S01E02.chs&eng.srt")) != "简中·英文·双语" {
+		t.Fatalf("label %q", LangLabel(LangOf("Show.S01E02.chs&eng.srt")))
 	}
-	if LangLabel(LangOf(best.Name)) != "简中·英文·双语" {
-		t.Fatalf("label %q", LangLabel(LangOf(best.Name)))
+	// the real ASSRT pack for Spider-Man: tags glued to the release name
+	pack := []Entry{{Name: "X.2160p.iT.WEB-DLEng.srt"}, {Name: "X.2160p.iT.WEB-DL.HK.srt"}, {Name: "X.2160p.iT.WEB-DLChs.ass"}, {Name: "X.2160p.iT.WEB-DLChs.srt"},
+		{Name: "X.2160p.iT.WEB-DLChsEng.srt"}, {Name: "X.2160p.iT.WEB-DLCht.srt"}}
+	if b := Pick(pack, "X.1080p.WEBRip.mp4"); b.Name != "X.2160p.iT.WEB-DLChs.srt" {
+		t.Fatalf("spider pack picked %s", b.Name)
+	}
+	for n, want := range map[string]string{"X.WEB-DLChs.srt": "简中", "X.WEB-DLChsEng.srt": "简中·英文·双语", "X.WEB-DLEng.srt": "英文", "X.WEB-DL.HK.srt": "繁中", "Avengers.2012.srt": ""} {
+		if got := LangLabel(LangOf(n)); got != want {
+			t.Errorf("LangOf(%q) = %q, want %q", n, got, want)
+		}
 	}
 	if e := Expand("x.srt", []byte(srtUTF8)); len(e) != 1 || e[0].Name != "x.srt" {
 		t.Fatalf("plain file: %+v", names(e))

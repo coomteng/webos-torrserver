@@ -104,12 +104,16 @@ var API = (function () {
   function echo() { return request('GET', TS + '/echo', null, 5000); }
 
   /* ---- sidecar ---- */
+  /* Always ask the sidecar: on the TV (file://) the addresses are baked in, but /config also says
+   * whether subtitles are available. Falls back to the baked-in TorrServer if the sidecar is down. */
   function config() {
-    if (!fromHttp) return Promise.resolve({ torrserver: TS });
     return request('GET', SIDECAR + '/config', null, 8000).then(function (c) {
-      if (c && c.torrserver) TS = String(c.torrserver).replace(/\/+$/, '');
+      if (c && c.torrserver && (fromHttp || !TS)) TS = String(c.torrserver).replace(/\/+$/, '');
       if (c && c.subs) subsInfo = c.subs;
       return c;
+    }, function (err) {
+      if (!fromHttp) return { torrserver: TS };
+      throw err;
     });
   }
 
