@@ -9,6 +9,7 @@
 //   - /r/<id>: the phone page (paste a magnet, "cache" or "watch").
 //   - /tv/ and /sim: static hosting of the TV app and the browser simulator, plus /config
 //     so both know where TorrServer lives.
+//   - /title?q=: Chinese film title -> English candidates via Wikidata, for the phone's torrent search.
 //   - /subs/*: external subtitles — search on assrt.net, download, convert anything to WebVTT,
 //     keep it on disk per torrent file (see subs_handlers.go). Optional (TORR_SUBS_DIR).
 package main
@@ -33,6 +34,7 @@ type Config struct {
 	Verbose    bool
 	SubsDir    string // where converted subtitles live; empty disables /subs/*
 	AssrtToken string // assrt.net API token (free account); empty disables search
+	Wikidata   string // Wikidata API for Chinese -> English titles (tests point it at a fake)
 }
 
 func loadConfig() Config {
@@ -51,6 +53,7 @@ func loadConfig() Config {
 		Verbose:    os.Getenv("TORR_VERBOSE") != "",
 		SubsDir:    os.Getenv("TORR_SUBS_DIR"),
 		AssrtToken: strings.TrimSpace(os.Getenv("ASSRT_TOKEN")),
+		Wikidata:   os.Getenv("TORR_WIKIDATA"),
 	}
 }
 

@@ -26,7 +26,7 @@ serves the static pages. TorrServer stays stock.
 
 | dir | what |
 | --- | --- |
-| `sidecar/` | Go, stdlib + `skip2/go-qrcode` + `x/text`. `/remote/*` channel, `/r/<id>` phone page, `/tv/` app hosting, `/sim` browser simulator, `/config`, `/subs/*` external subtitles (`sidecar/subs/`). |
+| `sidecar/` | Go, stdlib + `skip2/go-qrcode` + `x/text`. `/remote/*` channel, `/r/<id>` phone page, `/title` Chinese→English titles (Wikidata), `/tv/` app hosting, `/sim` browser simulator, `/config`, `/subs/*` external subtitles (`sidecar/subs/`). |
 | `app/` | TV app. No build step, ES5 only (`tools/es5check.sh`). `nav.js` (focus + Magic Remote pointer) is copied from [moontv-webos](https://github.com/coomteng/moontv-webos). |
 | `sim/` | 1920×1080 iframe + on-screen remote for desktop testing. |
 | `test/search.js` | Phone-page torrent search end-to-end (real sidecar + fake TorrServer). |
@@ -97,6 +97,12 @@ Magic Remote: hover focuses, click activates, wheel scrolls / seeks, click on th
   seeders (max 50) and carry the same health tag as the torrent list (健康 / 无做种者 / 没有 peer, from the indexer's
   Seed/Peer snapshot, which may lag). 观看 = add → wait for metadata → play the biggest video, 缓存 = add
   only — the same flow as a pasted magnet (`Magnet`, else `Link`). The sidecar is not involved.
+- Chinese titles: the indexers only have English release names, and TPB answers an unmatched query with its top-100.
+  A query containing Han characters first goes to the sidecar's `GET /title?q=` (Wikidata entity search in Chinese →
+  English label + year of film/series items; cached 24 h, 1 s spacing, 30 s back-off on 429). The newest released title
+  is searched, the others become chips; unknown titles ask for the English name. A result must contain every word of
+  the search (stopwords and words with digits are optional), which also drops TPB's top-100 fallback. Known miss: YTS
+  lists some Asian films under romanized original titles (e.g. Liú Làng Dì Qiú) and those are filtered out.
 - Dead blocks: when the player has been `waiting` for 12 s with no seeder, the app polls `POST /cache {action:get}`
   for the first piece ahead of the stream reader that is not `Completed` (`Readers[].Reader` vs `Pieces`, which also
   lists partial pieces). If that piece has not grown for 12 s it is dead — overall download speed is ignored, since

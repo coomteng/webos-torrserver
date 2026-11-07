@@ -53,6 +53,9 @@ h2{font-size:15px;color:#8f94a3;margin:26px 0 8px;font-weight:600}
 #srch input:focus{border-color:#fad778}
 #srch .q button{flex:none;background:#fad778;color:#111;padding:10px 16px;font-size:15px}
 #sm{font-size:13px;color:#8f94a3;min-height:16px;padding-bottom:8px}#sm.err{color:#ff8a80}
+#tc{display:flex;flex-wrap:wrap;gap:6px;padding-bottom:8px}#tc:empty{display:none}
+#tc button{flex:none;font-size:13px;font-weight:400;padding:6px 10px;border-radius:16px;background:#1a1d28;color:#d6d9e2;border:1px solid #2a2f40}
+#tc button.on{border-color:#fad778;color:#fad778}
 .sr{padding:10px 0;border-top:1px solid #1f2330}
 .sr .n{font-size:14px;color:#fff;word-break:break-all;line-height:1.35}
 .sr .s{font-size:12px;color:#8f94a3;margin-top:3px}
@@ -66,7 +69,7 @@ h2{font-size:15px;color:#8f94a3;margin:26px 0 8px;font-weight:600}
 <div id="msg"></div>
 <details id="srch"><summary>搜索种子</summary>
 <form class="q" onsubmit="tsSearch();return false"><input id="ts-q" type="search" placeholder="片名，如 Dune 2024" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="search"><button id="ts-b" type="submit">搜索</button></form>
-<div id="sm"></div><div id="sr"></div></details>
+<div id="tc"></div><div id="sm"></div><div id="sr"></div></details>
 <h2>电视上的种子</h2><div id="list"><div class="empty">加载中…</div></div>
 <script>
 var ID=__ID__, TS=__TS__;
@@ -115,23 +118,49 @@ var SEARCH_MAX=50,searchSeq=0;
 function smsg(s,err){var m=$('sm');m.textContent=s||'';m.className=err?'err':''}
 /* same three states and labels as the torrent list, from the indexer's Seed/Peer snapshot */
 function searchHealth(x){var s=+x.Seed||0,p=+x.Peer||0;return s>0?'ok':p>0?'noseed':'nopeer'}
+/* The indexers only know English release names, and TPB answers an unmatched query with its top-100.
+ * So: a Chinese query is first turned into English titles via the sidecar (/title, Wikidata); the
+ * newest already-released title is searched right away and the others become chips. A result must
+ * contain every word of the search (stopwords and anything with a digit — years, 1080p, "2" — are
+ * optional); that also hides TPB's top-100 fallback for unmatched queries. */
+var HAN=/[\u3400-\u9fff\uf900-\ufaff]/;
+var STOP={the:1,a:1,an:1,of:1,and:1,'in':1,on:1,to:1,at:1,de:1,la:1,le:1,el:1,der:1,die:1,das:1};
+function terms(q){return q.toLowerCase().split(/[^0-9a-z\u00c0-\u024f\u3400-\u9fff]+/).filter(function(w){return w.length>=2&&!STOP[w]&&!/[0-9]/.test(w)})}
+function relevant(x,ts){var n=(x.Title||x.Name||'').toLowerCase();for(var i=0;i<ts.length;i++)if(n.indexOf(ts[i])<0)return false;return true}
 function tsSearch(){
   var q=$('ts-q').value.trim();if(!q){smsg('请输入片名',1);return}
-  $('ts-q').blur();var my=++searchSeq;$('ts-b').disabled=true;$('sr').innerHTML='';smsg('正在搜索…');
-  var slow=setTimeout(function(){if(my===searchSeq)smsg('正在搜索…（搜索站响应慢，再等等）')},12000);
-  fetch(TS+'/torznab/search/?query='+encodeURIComponent(q)).then(function(r){if(!r.ok)throw new Error('TorrServer '+r.status);return r.text()}).then(function(t){
+  $('ts-q').blur();$('tc').innerHTML='';
+  if(!HAN.test(q)){runSearch(q,q);return}
+  var my=++searchSeq;$('ts-b').disabled=true;$('sr').innerHTML='';smsg('正在查「'+q+'」的英文片名…');
+  fetch('/title?q='+encodeURIComponent(q)).then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j&&j.error||('HTTP '+r.status));return j})}).then(function(j){
+    if(my!==searchSeq)return;
+    var c=(j&&j.candidates)||[];
+    if(!c.length){$('ts-b').disabled=false;smsg('没查到「'+q+'」对应的英文片名。搜索站只有英文资源，请直接输入英文名（如 The Wandering Earth）',1);return}
+    var now=new Date().getFullYear(),k=0;for(var i=0;i<c.length;i++)if(!c[i].year||c[i].year<=now){k=i;break}
+    renderChips(c,q,k);runSearch(c[k].en,q,c[k]);
+  }).catch(function(e){if(my===searchSeq){$('ts-b').disabled=false;smsg('片名查询失败：'+(e.message||e)+'。可直接输入英文名搜索',1)}});
+}
+function chipText(c){return c.en+(c.year?' ('+c.year+')':'')+(c.kind==='series'?' · 剧集':'')}
+function renderChips(c,q,on){var box=$('tc');box.innerHTML='';c.slice(0,6).forEach(function(x,i){var b=document.createElement('button');b.type='button';b.textContent=chipText(x);if(i===on)b.className='on';b.onclick=function(){renderChips(c,q,i);runSearch(x.en,q,x)};box.appendChild(b)})}
+function runSearch(term,orig,cand){
+  var my=++searchSeq;$('ts-b').disabled=true;$('sr').innerHTML='';
+  var via=cand?'已按「'+chipText(cand)+'」搜索':'';
+  smsg((via?via+' · ':'')+'正在搜索…');
+  var slow=setTimeout(function(){if(my===searchSeq)smsg((via?via+' · ':'')+'正在搜索…（搜索站响应慢，再等等）')},12000);
+  fetch(TS+'/torznab/search/?query='+encodeURIComponent(term)).then(function(r){if(!r.ok)throw new Error('TorrServer '+r.status);return r.text()}).then(function(t){
     var list=null;try{list=t?JSON.parse(t):[]}catch(e){throw new Error('搜索返回无法解析')}
     if(my!==searchSeq)return;
     if(!Array.isArray(list))throw new Error('服务端未开启搜索（TorrServer 设置里的 Torznab）');
-    renderSearch(list,q);
+    renderSearch(list,term,via);
   }).catch(function(e){if(my===searchSeq)smsg(e.message||String(e),1)}).then(function(){clearTimeout(slow);if(my===searchSeq)$('ts-b').disabled=false});
 }
-function renderSearch(list,q){
-  var box=$('sr');box.innerHTML='';
-  list=list.filter(function(x){return x&&(x.Magnet||x.Link)});
+function renderSearch(list,q,via){
+  var box=$('sr'),ts=terms(q),n0=0,pre=via?via+' · ':'';box.innerHTML='';
+  list=list.filter(function(x){return x&&(x.Magnet||x.Link)});n0=list.length;
+  list=list.filter(function(x){return relevant(x,ts)});
   list.sort(function(a,b){return(+b.Seed||0)-(+a.Seed||0)});
-  if(!list.length){smsg('没有找到「'+q+'」的种子（或服务端未开启搜索）');return}
-  smsg('共 '+list.length+' 条'+(list.length>SEARCH_MAX?'，显示做种最多的 '+SEARCH_MAX+' 条':'')+' · 健康度按索引站报告的做种/下载数，可能有延迟');
+  if(!list.length){smsg(pre+'没有找到「'+q+'」的种子'+(n0?'（搜索站返回的 '+n0+' 条都与片名无关）':''));return}
+  smsg(pre+'共 '+list.length+' 条'+(list.length>SEARCH_MAX?'，显示做种最多的 '+SEARCH_MAX+' 条':'')+(n0>list.length?'（已滤掉 '+(n0-list.length)+' 条无关结果）':'')+' · 健康度按索引站报告的做种/下载数，可能有延迟');
   list.slice(0,SEARCH_MAX).forEach(function(x){
     var seed=+x.Seed||0,d=document.createElement('div');d.className='sr';
     d.innerHTML='<div class="n"></div><div class="s"></div><div class="a"><button class="cache">缓存</button><button class="watch">观看</button></div>';

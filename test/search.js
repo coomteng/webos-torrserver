@@ -30,6 +30,18 @@ const RESULTS = [
   { Title: 'broken item without links', Size: '1 GiB', Seed: '99', Peer: '1', Magnet: '', Link: '' },
 ];
 
+/* what TPB returns for a query it cannot match: its top-100, nothing to do with the query */
+const TOP100 = [
+  { Title: 'Spider-Man Brand New Day (2026) [1080p]', Size: '2.7 GiB', Seed: '900', Peer: '80', Magnet: 'magnet:?xt=urn:btih:' + '1'.repeat(40) },
+  { Title: 'MobLand S02E08 1080p AMZN WEB-DL', Size: '1.9 GiB', Seed: '700', Peer: '60', Magnet: 'magnet:?xt=urn:btih:' + '2'.repeat(40) },
+  { Title: 'The New Wild Roses - Rocking Hard (2026) MP3', Size: '90 MiB', Seed: '50', Peer: '5', Magnet: 'magnet:?xt=urn:btih:' + '5'.repeat(40) },   /* shares only "the" */
+  { Title: 'Earth Wind and Fire Greatest Hits', Size: '300 MiB', Seed: '30', Peer: '2', Magnet: 'magnet:?xt=urn:btih:' + '6'.repeat(40) },     /* shares one word */
+];
+const WANDERING2 = TOP100.concat([
+  { Title: 'The.Wandering.Earth.II.2023.Chinese.1080p.BluRay', Size: '4.4 GiB', Seed: '40', Peer: '9', Magnet: 'magnet:?xt=urn:btih:' + '3'.repeat(40) },
+  { Title: 'The Wandering Earth 2 (2023) [1080p] [YTS]', Size: '3.0 GiB', Seed: '120', Peer: '20', Magnet: 'magnet:?xt=urn:btih:' + '4'.repeat(40) },
+]);
+const searched = [];
 const added = [];
 const addCount = {};
 function fakeTorrServer() {
@@ -41,10 +53,22 @@ function fakeTorrServer() {
       req.on('end', () => {
         const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }); res.end(JSON.stringify(obj)); };
         if (req.method === 'OPTIONS') { res.writeHead(204, { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' }); return res.end(); }
+        if (u.pathname === '/w/api.php') {   /* fake Wikidata: recorded fixtures from sidecar/testdata */
+          const q = u.searchParams; const fx = (n) => fs.readFileSync(path.join(ROOT, 'sidecar/testdata', n), 'utf8');
+          if (q.get('action') === 'wbsearchentities') {
+            if (q.get('search') === '流浪地球') return json(200, JSON.parse(fx('wd_search_wandering.json')));
+            if (q.get('search') === '沙丘') return json(200, JSON.parse(fx('wd_search_dune.json')));
+            return json(200, { search: [] });
+          }
+          return json(200, JSON.parse(fx(q.get('ids').indexOf('Q60834962') >= 0 ? 'wd_entities_dune.json' : 'wd_entities_wandering.json')));
+        }
         if (u.pathname === '/torznab/search/') {
           const q = u.searchParams.get('query') || '';
+          searched.push(q);
           if (q === 'nothing') return json(200, []);
           if (q === 'off') return json(200, null);
+          if (q === 'The Wandering Earth 3' || q === '沙丘' || q === 'unrelated') return json(200, TOP100);   /* TPB: no match -> top-100 */
+          if (q === 'The Wandering Earth 2') return json(200, WANDERING2);
           return json(200, RESULTS);
         }
         if (u.pathname === '/torrents') {
@@ -88,7 +112,7 @@ function postJSON(url, obj) {
   const bin = path.join(TMP, 'torr-remote');
   execFileSync(GOBIN, ['build', '-o', bin, '.'], { cwd: path.join(ROOT, 'sidecar'), env: Object.assign({}, process.env, { TMPDIR: process.env.TMPDIR || path.join(os.homedir(), '.cache/gotmp'), CGO_ENABLED: '0' }), stdio: 'inherit' });
   const PORT = 18000 + Math.floor(Math.random() * 1000);
-  const side = spawn(bin, [], { env: Object.assign({}, process.env, { TORR_SERVER: TS, TORR_PORT: String(PORT), TORR_LISTEN: '127.0.0.1', TORR_APP_DIR: path.join(ROOT, 'app') }), stdio: ['ignore', 'pipe', 'pipe'] });
+  const side = spawn(bin, [], { env: Object.assign({}, process.env, { TORR_SERVER: TS, TORR_PORT: String(PORT), TORR_LISTEN: '127.0.0.1', TORR_APP_DIR: path.join(ROOT, 'app'), TORR_WIKIDATA: TS + '/w/api.php' }), stdio: ['ignore', 'pipe', 'pipe'] });
   side.stderr.on('data', (d) => process.stdout.write('  [sidecar] ' + d));
   const SIDE = `http://127.0.0.1:${PORT}`;
   for (let i = 0; i < 50; i++) { try { await getJSON(SIDE + '/health'); break; } catch (e) { await sleep(100); } }
@@ -119,6 +143,7 @@ function postJSON(url, obj) {
   assert(rows[3] && rows[3].cls === 'nopeer' && /没有 peer/.test(rows[3].s), 'seed 0, peer 0 -> red 没有 peer: ' + (rows[3] && rows[3].s));
   assert(rows[0] && /健康 · 1260 做种.*232 下载 · 9\.1 GiB · yts/.test(rows[0].s), 'meta line: health · seeders / leechers / size / tracker: ' + (rows[0] && rows[0].s));
   assert(/共 4 条.*健康度/.test(sm), 'count message mentions health source: ' + sm);
+  assert(searched[0] === 'dune', 'latin query searched as typed (no /title round trip): ' + JSON.stringify(searched));
   await page.screenshot({ path: path.join(__dirname, 'shots', '16-phone-search.png'), fullPage: true }).catch(() => {});
 
   /* --- 观看 on the top row: magnet to TorrServer, play to the TV --- */
@@ -151,6 +176,37 @@ function postJSON(url, obj) {
   assert(added[0] === 'http://lodestarr.example/indexers/7/dl?link=abc', 'Link-only row: TorrServer got the Link');
   assert(msgs2.some((m) => m.action === 'added') && !msgs2.some((m) => m.action === 'play'), 'cache only tells the TV "added"');
 
+  /* --- relevance filter: TPB's top-100 for an unmatched query is not shown as results --- */
+  await page.evaluate(() => { document.getElementById('ts-q').value = 'unrelated'; tsSearch(); });
+  await sleep(800);
+  let s3 = await page.$eval('#sm', (e) => e.textContent);
+  assert((await page.$$('#sr .sr')).length === 0 && /没有找到「unrelated」.*4 条都与片名无关/.test(s3), 'unmatched query: top-100 fallback filtered out: ' + s3);
+
+  /* --- Chinese query: /title -> newest film searched, other candidates as chips --- */
+  searched.length = 0;
+  await page.evaluate(() => { document.getElementById('ts-q').value = '流浪地球'; tsSearch(); });
+  await sleep(1500);
+  const chips = await page.$$eval('#tc button', (bs) => bs.map((b) => b.textContent + (b.className === 'on' ? ' *' : '')));
+  s3 = await page.$eval('#sm', (e) => e.textContent);
+  console.log('[zh]', JSON.stringify(chips), s3, JSON.stringify(searched));
+  const zrows = await page.$$eval('#sr .sr .n', (ns) => ns.map((n) => n.textContent));
+  assert(chips.length === 3 && chips[0] === 'The Wandering Earth 3 (2027)' && chips[1] === 'The Wandering Earth 2 (2023) *' && chips[2] === 'The Wandering Earth (2019)', 'chips newest first; default = newest already released (2027 is in the future): ' + JSON.stringify(chips));
+  assert(searched[0] === 'The Wandering Earth 2', 'searched the English title, not 流浪地球: ' + JSON.stringify(searched));
+  assert(zrows.length === 2 && /Wandering Earth 2/.test(zrows[0]) && /Wandering\.Earth\.II/.test(zrows[1]), 'results sorted by seeders; top-100 noise ("the", one shared word) dropped: ' + JSON.stringify(zrows));
+  assert(/已按「The Wandering Earth 2 \(2023\)」搜索 · 共 2 条（已滤掉 4 条无关结果）/.test(s3), 'status names the title and the filtered count: ' + s3);
+  await page.evaluate(() => document.querySelectorAll('#tc button')[0].click());
+  await sleep(1000);
+  s3 = await page.$eval('#sm', (e) => e.textContent);
+  console.log('[zh chip 1]', s3);
+  assert(/已按「The Wandering Earth 3 \(2027\)」搜索.*没有找到/.test(s3) && (await page.$$('#sr .sr')).length === 0, 'chip for the unreleased film -> says which title was used and found nothing: ' + s3);
+  await page.screenshot({ path: path.join(__dirname, 'shots', '18-phone-search-zh.png'), fullPage: true }).catch(() => {});
+
+  /* --- Chinese title Wikidata does not know --- */
+  await page.evaluate(() => { document.getElementById('ts-q').value = '小气鬼'; tsSearch(); });
+  await sleep(800);
+  s3 = await page.$eval('#sm', (e) => e.textContent);
+  assert(/没查到「小气鬼」对应的英文片名.*英文名/.test(s3) && (await page.$$('#tc button')).length === 0, 'unknown Chinese title -> asks for the English name: ' + s3);
+
   /* --- empty and disabled --- */
   await page.evaluate(() => { document.getElementById('ts-q').value = 'nothing'; tsSearch(); });
   await sleep(800);
@@ -171,7 +227,7 @@ function postJSON(url, obj) {
   assert(st.view === 'home', 'TV app reports home on startup (report before registration is kept): ' + JSON.stringify(st));
   side.kill();
   await sleep(300);
-  const side2 = spawn(bin, [], { env: Object.assign({}, process.env, { TORR_SERVER: TS, TORR_PORT: String(PORT), TORR_LISTEN: '127.0.0.1', TORR_APP_DIR: path.join(ROOT, 'app') }), stdio: ['ignore', 'pipe', 'pipe'] });
+  const side2 = spawn(bin, [], { env: Object.assign({}, process.env, { TORR_SERVER: TS, TORR_PORT: String(PORT), TORR_LISTEN: '127.0.0.1', TORR_APP_DIR: path.join(ROOT, 'app'), TORR_WIKIDATA: TS + '/w/api.php' }), stdio: ['ignore', 'pipe', 'pipe'] });
   for (let i = 0; i < 50; i++) { try { await getJSON(SIDE + '/health'); break; } catch (e) { await sleep(100); } }
   st = {};
   for (let i = 0; i < 40 && !st.view; i++) { await sleep(500); try { st = await getJSON(SIDE + '/remote/srchtv/state'); } catch (e) { st = {}; } }

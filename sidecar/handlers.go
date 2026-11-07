@@ -14,9 +14,16 @@ type App struct {
 	cfg    Config
 	remote *Remote
 	subs   *Subs
+	titles *Titles
 }
 
-func newApp(cfg Config) *App { return &App{cfg: cfg, remote: newRemote(), subs: newSubs(cfg)} }
+func newApp(cfg Config) *App {
+	t := newTitles()
+	if cfg.Wikidata != "" {
+		t.Base = cfg.Wikidata
+	}
+	return &App{cfg: cfg, remote: newRemote(), subs: newSubs(cfg), titles: t}
+}
 
 // ---------------------------------------------------------------- response helpers
 
@@ -152,6 +159,8 @@ func (a *App) get(w http.ResponseWriter, r *http.Request, p string) {
 		a.remoteGet(w, r, p)
 	case strings.HasPrefix(p, "/subs/"):
 		a.subsGet(w, r, p)
+	case p == "/title":
+		a.titleGet(w, r)
 	default:
 		sendError(w, r, 404, "not found")
 	}
