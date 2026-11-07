@@ -279,8 +279,18 @@ func (p *Precache) run(ctx context.Context, hash string, index int) {
 			}
 		}
 		if err == nil && st == 3 {
-			p.finish(hash, "")
-			return
+			// Preload also returns early when the torrent is dropped under it
+			// (SetSettings drops all torrents, "torrent closed"), so trust the
+			// file's own byte count when TorrServer reports it (fork >= 2026-11-08).
+			done, why := p.fileComplete(ctx, hash, index)
+			if ctx.Err() != nil {
+				return
+			}
+			if done {
+				p.finish(hash, "")
+				return
+			}
+			st, err = 0, errors.New(why)
 		}
 		msg := "TorrServer stat " + strconv.Itoa(st)
 		if err != nil {
@@ -352,6 +362,51 @@ func (p *Precache) watch(ctx context.Context, hash string) (int, error) {
 			return st, nil
 		}
 	}
+}
+
+// fileComplete reports whether file index of hash is fully on disk according to
+// file_stats[].bytes_completed. Without that field (older TorrServer) it
+// answers true so the stat-3 return keeps its old meaning.
+func (p *Precache) fileComplete(ctx context.Context, hash string, index int) (bool, string) {
+	body := strings.NewReader(`{"action":"get","hash":"` + hash + `"}`)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, p.ts+"/torrents", body)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return false, err.Error()
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return false, "TorrServer " + resp.Status
+	}
+	var st struct {
+		Stat  int `json:"stat"`
+		Files []struct {
+			Id             int    `json:"id"`
+			Length         int64  `json:"length"`
+			BytesCompleted *int64 `json:"bytes_completed"`
+		} `json:"file_stats"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+		return false, err.Error()
+	}
+	for _, f := range st.Files {
+		if f.Id != index {
+			continue
+		}
+		if f.BytesCompleted == nil {
+			return true, ""
+		}
+		if *f.BytesCompleted >= f.Length {
+			return true, ""
+		}
+		return false, "incomplete " + strconv.FormatInt(*f.BytesCompleted>>20, 10) + "/" + strconv.FormatInt(f.Length>>20, 10) + " MB"
+	}
+	if len(st.Files) == 0 {
+		// torrent already unloaded (stat 5): no file info, cannot verify
+		return false, "torrent unloaded before the file was verified"
+	}
+	return false, "file index " + strconv.Itoa(index) + " not in torrent"
 }
 
 func (p *Precache) getStat(ctx context.Context, hash string) (int, error) {

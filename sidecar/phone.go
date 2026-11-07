@@ -224,10 +224,11 @@ function pcCard(t,vf){var it=PC.items[t.hash];if(it&&!it.done){pcStop(t.hash).th
 function pcFile(t,f){var it=PC.items[t.hash];if(it&&!it.done&&it.index===f.id){pcStop(t.hash).then(function(){msg('已停止后台缓存');load()},function(e){msg(e.message,1)});return}
   pcAdd(t.hash,f.id,t.title||'').then(function(){msg('已加入后台缓存：'+f.path.split('/').pop()+' ✓');load()},function(e){msg(e.message,1)})}
 /* label for the card subtitle */
-function pcLabel(t){var it=PC.items[t.hash];if(!it)return null;var pct=t.torrent_size?Math.min(100,100*(t.loaded_size||0)/t.torrent_size):0;
+function pcPct(t,it){var fs=t.file_stats||[];for(var i=0;i<fs.length;i++)if(fs[i].id===it.index&&fs[i].length&&typeof fs[i].bytes_completed==='number')return Math.min(100,100*fs[i].bytes_completed/fs[i].length);return t.torrent_size?Math.min(100,100*(t.loaded_size||0)/t.torrent_size):0}
+function pcLabel(t){var it=PC.items[t.hash];if(!it)return null;var pct=pcPct(t,it);
   if(it.done)return{cls:'pcdone',txt:'● 已完整缓存'};
   if(!PC.enabled)return{cls:'pcoff',txt:'● 待缓存（总开关已关）'};
-  if(it.error)return{cls:'pcerr',txt:'● 缓存重试中：'+it.error};
+  if(it.error)return{cls:'pcerr',txt:'● 后台缓存中 · '+pct.toFixed(pct<10?1:0)+'% · 等待中（'+it.error+'）'};
   return{cls:'pc',txt:'● 后台缓存中 · '+pct.toFixed(pct<10?1:0)+'%'}}
 function render(list){
   var box=$('list');box.innerHTML='';

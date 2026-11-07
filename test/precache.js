@@ -27,11 +27,11 @@ const H2 = 'ed0da850c273e3e15a819bdcbbf418bc85107ec8';
 const preloads = [];   // "hash/index"
 const stops = [];      // hashes
 const waiters = {};    // hash -> [res]
-const loaded = {};     // hash -> loaded_size shown in list
+const loaded = {};     // hash -> loaded_size shown in list (also bytes_completed of the main file)
 const stat = {};       // hash -> stat for list/get (2 while a preload is held open)
 function torrentStatus(hash) {
   return { hash, title: 'T ' + hash.slice(0, 6), stat: stat[hash] || 3, stat_string: '', torrent_size: 1000, loaded_size: loaded[hash] || 0,
-    file_stats: [{ id: 1, path: 'X/sample.mkv', length: 50 }, { id: 2, path: 'X/Main.Movie.2024.mkv', length: 900 }, { id: 3, path: 'X/readme.txt', length: 1 }] };
+    file_stats: [{ id: 1, path: 'X/sample.mkv', length: 50, bytes_completed: 0 }, { id: 2, path: 'X/Main.Movie.2024.mkv', length: 900, bytes_completed: Math.min(900, Math.round((loaded[hash] || 0) * 0.9)) }, { id: 3, path: 'X/readme.txt', length: 1, bytes_completed: 0 }] };
 }
 function finishPreload(hash) {
   stat[hash] = 3; loaded[hash] = 1000;

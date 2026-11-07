@@ -27,10 +27,11 @@ type fakeTS struct {
 	waiters  map[string][]chan int // hash -> blocked /stream requests
 	already  map[string]bool
 	down     bool
+	partial  map[string]bool // "get" reports the file as incomplete
 }
 
 func newFakeTS(t *testing.T) *fakeTS {
-	f := &fakeTS{waiters: map[string][]chan int{}, already: map[string]bool{}}
+	f := &fakeTS{waiters: map[string][]chan int{}, already: map[string]bool{}, partial: map[string]bool{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		if f.down {
@@ -87,8 +88,13 @@ func newFakeTS(t *testing.T) *fakeTS {
 				if f.already[hash] {
 					st = 2
 				}
+				bc := int64(1000)
+				if f.partial[hash] {
+					bc = 400
+				}
 				f.mu.Unlock()
-				json.NewEncoder(w).Encode(map[string]int{"stat": st})
+				json.NewEncoder(w).Encode(map[string]interface{}{"stat": st, "file_stats": []map[string]interface{}{
+					{"id": 1, "length": 1000, "bytes_completed": bc}, {"id": 2, "length": 1000, "bytes_completed": bc}, {"id": 3, "length": 1000, "bytes_completed": bc}}})
 			default:
 				http.Error(w, "unknown action", 400)
 			}
@@ -260,6 +266,28 @@ func TestPrecacheResumeAfterRestartAndWatchRunningPreload(t *testing.T) {
 	}
 	ts.finish(hA) // "get" now answers 3
 	waitFor(t, "A done via watch", func() bool { it := item(p2, hA); return it != nil && it.Done })
+}
+
+// SetSettings ("drop all torrents") or a closed torrent make Preload return
+// with stat 3 before the file is complete; the sidecar must not call that done.
+func TestPrecacheIncompleteFileIsNotDoneAndRetries(t *testing.T) {
+	ts, p := newPrecacheTest(t, t.TempDir())
+	ts.mu.Lock()
+	ts.partial[hA] = true
+	ts.mu.Unlock()
+	p.add(hA, 1, "")
+	waitFor(t, "preload", func() bool { return ts.count(&ts.preloads) == 1 })
+	ts.finish(hA) // preload "returns" although the file is 400/1000
+	waitFor(t, "incomplete recorded", func() bool {
+		it := item(p, hA)
+		return it != nil && !it.Done && strings.Contains(it.Error, "incomplete")
+	})
+	waitFor(t, "preload retried", func() bool { return ts.count(&ts.preloads) >= 2 })
+	ts.mu.Lock()
+	ts.partial[hA] = false
+	ts.mu.Unlock()
+	ts.finish(hA)
+	waitFor(t, "done once complete", func() bool { it := item(p, hA); return it != nil && it.Done && it.Error == "" })
 }
 
 func TestPrecacheRetriesWhileTorrServerDown(t *testing.T) {
