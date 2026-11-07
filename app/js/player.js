@@ -27,9 +27,15 @@
   var subBusy = false;
   /* dead-block detection: the swarm has no seeder and the player has been waiting on data that
    * nobody delivers. stallSince = when `waiting` started (0 = playing fine); dead = what /cache said
-   * about the first missing piece ahead of the reader, set once the stall is confirmed. */
-  var STALL_MS = 12000, STALL_SPEED = 10 * 1024;
-  var stallSince = 0, dead = null, deadBusy = false;
+   * about the first missing piece ahead of the reader, set once the stall is confirmed.
+   * Overall download speed says nothing (readahead keeps pulling other pieces at full speed), so the
+   * test is: the first unfinished piece ahead of the reader has not grown for STALL_MS. probe = that
+   * piece and its byte count when last seen growing. errStall = webOS gave up on the stalled stream
+   * with a decode/network error (it does after ~50 s): look at /cache right away, skip reloads.
+   * retried = the current file already got its one automatic retry after a cold-start error 4. */
+  var STALL_MS = 12000, DEAD_RUN_MAX = 4;
+  var stallSince = 0, dead = null, deadBusy = false, probe = null, errStall = false;
+  var retried = false, loadStart = 0;
   var lastSeeders = -1;
 
   function $(id) { return UI.$(id); }
@@ -407,38 +413,48 @@
   }
 
   /* ---- dead blocks (no seeder, player waiting on a piece nobody has) ---- */
-  function clearStall() { stallSince = 0; if (dead) { dead = null; if (active) setState(''); } }
+  function clearStall() { stallSince = 0; probe = null; errStall = false; if (dead) { dead = null; if (active) setState(''); } }
   function checkStall(st) {
-    if (!stallSince || dead || deadBusy || video.paused || video.ended) return;
-    if (Date.now() - stallSince < STALL_MS) return;
-    if ((st.download_speed || 0) >= STALL_SPEED || (st.connected_seeders || 0) > 0) return;
+    if (dead || deadBusy || video.ended) return;
+    if (!errStall && (!stallSince || video.paused)) return;
+    if (st && (st.connected_seeders || 0) > 0) return;
     deadBusy = true;
     findDead().then(function (d) {
       deadBusy = false;
-      if (!active || !stallSince || !d) return;
+      if (!active || dead || !d || (!stallSince && !errStall)) return;
+      var now = Date.now();
+      if (!errStall) {
+        if (!probe || probe.piece !== d.piece || d.size > probe.size) { probe = { piece: d.piece, size: d.size, since: now }; return; }
+        if (now - stallSince < STALL_MS || now - probe.since < STALL_MS) return;
+      }
       dead = d;
-      setState('卡在没人有的数据块 #' + d.piece + (d.count > 1 ? '–' + (d.piece + d.count - 1) : '') + '（共 ' + d.total + ' 块，无做种者）\n按 ▶▶ 跳过约 ' + fmtSkip(d.seconds));
+      setState((errStall ? '播放中断：' : '') + '卡在没人有的数据块 #' + d.piece + (d.count > 1 ? '–' + (d.piece + d.count - 1) : '') + '（共 ' + d.total + ' 块，无做种者）\n按 ▶▶ 跳过约 ' + fmtSkip(d.seconds));
       showOsd(true);
     }, function () { deadBusy = false; });
   }
-  /* /cache: Readers[].Reader is the piece the stream reader sits on; Pieces holds cached pieces only.
-   * First piece >= reader that is not cached = the dead block; count how many are missing in a row.
-   * Bytes -> seconds via the file's average bitrate (length / duration). */
+  /* /cache: Readers[].Reader is the piece the stream reader sits on; Pieces lists cached AND partially
+   * downloaded pieces ({Size, Completed}). The first piece >= reader that is not Completed is what the
+   * player waits for; the dead run continues over following pieces with no bytes at all (capped: those
+   * may just not be requested yet). Without readers (stream closed after an error) estimate the piece
+   * from the playback position. Bytes -> seconds via the file's average bitrate (length / duration). */
   function findDead() {
     return API.cache(hash).then(function (c) {
-      if (!c || !c.PiecesLength || !c.Readers || !c.Readers.length) return null;
-      var pieces = c.Pieces || {}, best = null;
-      for (var i = 0; i < c.Readers.length; i++) {
-        var p = c.Readers[i].Reader;
-        while (p < c.PiecesCount && pieces[p]) p++;
-        if (p >= c.PiecesCount) continue;
-        var n = 0;
-        while (p + n < c.PiecesCount && !pieces[p + n]) n++;
-        if (!best || p < best.piece) best = { piece: p, count: n, total: c.PiecesCount };
-      }
-      if (!best) return null;
+      if (!c || !c.PiecesLength || !c.PiecesCount) return null;
+      var pieces = c.Pieces || {}, best = null, readers = c.Readers || [];
       var f = current(), dur = video.duration;
       var rate = f && isFinite(dur) && dur > 0 ? f.length / dur : 0;
+      var starts = [];
+      for (var i = 0; i < readers.length; i++) starts.push(readers[i].Reader);
+      if (!starts.length && rate) starts.push(Math.floor((video.currentTime || 0) * rate / c.PiecesLength));
+      for (var j = 0; j < starts.length; j++) {
+        var p = starts[j];
+        while (p < c.PiecesCount && pieces[p] && pieces[p].Completed) p++;
+        if (p >= c.PiecesCount) continue;
+        var n = 1;
+        while (n < DEAD_RUN_MAX && p + n < c.PiecesCount && !(pieces[p + n] && pieces[p + n].Size)) n++;
+        if (!best || p < best.piece) best = { piece: p, count: n, total: c.PiecesCount, size: pieces[p] ? pieces[p].Size || 0 : 0 };
+      }
+      if (!best) return null;
       best.seconds = rate ? Math.ceil(best.count * c.PiecesLength / rate) + 2 : 60;
       return best;
     });
@@ -448,12 +464,19 @@
     var d = dead;
     if (!d) return;
     var from = video.currentTime || 0;
-    try { for (var i = 0; i < video.buffered.length; i++) if (video.buffered.start(i) <= from + 0.5 && video.buffered.end(i) > from) { from = video.buffered.end(i); break; } } catch (e) { /* ignore */ }
+    /* buffered is meaningless once the element errored out (it may claim the rest of the file) */
+    if (!video.error) try { for (var i = 0; i < video.buffered.length; i++) if (video.buffered.start(i) <= from + 0.5 && video.buffered.end(i) > from) { from = video.buffered.end(i); break; } } catch (e) { /* ignore */ }
     var dur = video.duration, t = from + d.seconds;
     if (isFinite(dur) && dur > 0 && t > dur - 2) { setState('死块在片尾，没有可跳的内容'); showOsd(false); return; }
-    dead = null; stallSince = 0;
+    var msg = '已跳过数据块 #' + d.piece + (d.count > 1 ? '–' + (d.piece + d.count - 1) : '') + '（' + UI.fmtTime(from) + ' → ' + UI.fmtTime(t) + '）';
+    if (video.error) {          /* the element gave up: seeking does nothing, reopen the stream at t */
+      loadFile(fileIdx, t);
+      setState(msg);
+      return;
+    }
+    dead = null; stallSince = 0; probe = null; errStall = false;
     try { video.currentTime = t; } catch (e2) { /* ignore */ }
-    setState('已跳过数据块 #' + d.piece + (d.count > 1 ? '–' + (d.piece + d.count - 1) : '') + '（' + UI.fmtTime(from) + ' → ' + UI.fmtTime(t) + '）');
+    setState(msg);
     startPlay();
     updateTime();
     showOsd(false);
@@ -462,14 +485,16 @@
   function stopStat() { if (statTimer) { clearInterval(statTimer); statTimer = null; } }
 
   /* ---- playback ---- */
-  function loadFile(i, startTime) {
+  function loadFile(i, startTime, isRetry) {
     if (!files[i]) return;
     if (i !== fileIdx && video.currentTime > 3) savePos(true);
     fileIdx = i;
     index = files[i].id;
     pendingSeek = startTime || 0;
+    loadStart = pendingSeek;
+    if (!isRetry) retried = false;
     lastErr = '';
-    stallSince = 0; dead = null;
+    stallSince = 0; dead = null; probe = null; errStall = false;
     renderTitle();
     markCurrentEp();
     audioN = 0;
@@ -549,7 +574,7 @@
     }, false);
     video.addEventListener('playing', function () { clearStall(); setState(''); startSaveTimer(); }, false);
     video.addEventListener('waiting', function () { if (!dead) setState('缓冲中…'); if (!stallSince) stallSince = Date.now(); }, false);
-    video.addEventListener('pause', function () { if (active && !video.ended) { setState('已暂停'); showOsd(true); savePos(true); } }, false);
+    video.addEventListener('pause', function () { if (active && !video.ended && !video.error && !dead) { setState('已暂停'); showOsd(true); savePos(true); } }, false);
     video.addEventListener('play', function () { setState(''); showOsd(false); }, false);
     video.addEventListener('seeking', function () { clearStall(); }, false);
     video.addEventListener('timeupdate', function () { if (active) { updateTime(); if (stallSince && !video.paused && video.readyState >= 3) clearStall(); } }, false);
@@ -557,11 +582,22 @@
     video.addEventListener('error', function () {
       if (!active) return;
       var code = video.error && video.error.code;
+      var t = video.currentTime || 0;
+      /* cold start: TorrServer still fetching metadata/first piece, webOS times out with error 4. One retry. */
+      if (code === 4 && t < 1 && !retried) {
+        retried = true;
+        setState('连接超时，重试中…');
+        var fi = fileIdx, start = loadStart;
+        setTimeout(function () { if (active && fileIdx === fi && video.error) loadFile(fi, start, true); }, 2000);
+        return;
+      }
       var why = code === 4 ? '格式不支持或源不可达' : code === 3 ? '解码失败' : code === 2 ? '网络错误' : '错误 ' + (code || '?');
       lastErr = why;
       setState('播放失败（' + why + '）\n按返回键退出');
       showOsd(true);
       stopSaveTimer();
+      /* mid-stream decode/network error with no seeder: usually webOS giving up on a dead block */
+      if ((code === 2 || code === 3) && t > 1 && lastSeeders <= 0 && !dead) { errStall = true; checkStall(null); }
     }, false);
   }
 
@@ -682,9 +718,9 @@
       subResults = null;
       subSaved = [];
       osdFocus = false;
-      stallSince = 0; dead = null;
+      stallSince = 0; dead = null; probe = null; errStall = false;
     },
-    stall: function () { return { since: stallSince, dead: dead, seeders: lastSeeders, state: $('osd-state').textContent }; },
+    stall: function () { return { since: stallSince, dead: dead, probe: probe, errStall: errStall, retried: retried, seeders: lastSeeders, state: $('osd-state').textContent }; },
     subtitle: function () { var sl = Subs.slots(); return { current: sl[0], second: sl[1], offset: Subs.offset(), cues: Subs.count(0), cues2: Subs.count(1), panel: subPanel, items: subItems.length, text: $('subtitle').textContent, text2: $('subtitle2').textContent }; },
     openSubs: function () { openSubPanel(); },
     audioTracks: function () { var t = audioTracks(), out = []; if (t) for (var i = 0; i < t.length; i++) out.push({ language: t[i].language || '', label: t[i].label || '', enabled: !!t[i].enabled, name: trackName(t[i], i) }); return out; },

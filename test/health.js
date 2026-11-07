@@ -3,8 +3,12 @@
  * Self-contained: ffmpeg makes a 40 s CBR MP4 (faststart), a tiny Node server plays TorrServer +
  * sidecar. The fake swarm has no seeder and one "dead" piece: /stream delivers bytes up to the dead
  * piece and then hangs the connection, exactly what a real TorrServer does while waiting for data
- * nobody has. /cache reports every piece cached except that one. Expected: the player notices the
- * stall within STALL_MS, names the piece, and ▶▶ seeks past it so playback resumes. */
+ * nobody has. /cache reports every piece cached except that one, which shows up as a 4 KB partial piece
+ * that never grows, while download_speed is high (like the real TV: readahead keeps pulling other pieces
+ * at 400-900 KB/s). Expected: the player notices the stall within ~STALL_MS, names the piece, and ▶▶
+ * seeks past it so playback resumes. Also: a cold-start error 4 (first /stream request 404s) is retried
+ * once automatically, and a mid-stream media error on the dead block (webOS gives up with a decode error
+ * after ~50 s; here provoked with junk bytes) still offers ▶▶, which reopens the stream. */
 const http = require('http');
 const fs = require('fs');
 const os = require('os');
@@ -38,6 +42,9 @@ function fixture() {
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'application/javascript', '.css': 'text/css', '.png': 'image/png', '.json': 'application/json' };
 const hung = [];
+let mode = 'hang';            /* what the dead piece does: 'hang' (TorrServer waiting) | 'garbage' (media error) | 'hang-free' (no dead piece) */
+let failNextStream = 0;       /* answer the next N /stream requests with 404 (cold-start error 4) */
+let streamReqs = 0;
 function serveFile(req, res, file, deadStart, deadEnd) {
   const st = fs.statSync(file);
   const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
@@ -52,9 +59,17 @@ function serveFile(req, res, file, deadStart, deadEnd) {
   } else {
     res.writeHead(200, { 'Content-Length': st.size });
   }
-  if (deadStart !== undefined && start < deadEnd && end >= deadStart) {
+  if (deadStart !== undefined && mode !== 'hang-free' && start < deadEnd && end >= deadStart) {
     /* deliver what exists before the dead piece, then stall like TorrServer waiting for peers */
     console.log(`  [stream] range ${start}-${end} crosses dead piece -> sending ${Math.max(0, deadStart - start)} bytes then hanging`);
+    if (mode === 'garbage') {
+      /* webOS gives up on a stalled stream with a decode error; headless Chrome just reconnects on a dropped
+       * connection, so provoke the same error class with junk where the dead piece is */
+      const head = start < deadStart ? fs.readFileSync(file).subarray(start, deadStart) : Buffer.alloc(0);
+      const junk = Buffer.alloc(end - Math.max(start, deadStart) + 1, 0xff);
+      res.end(Buffer.concat([head, junk]));
+      return;
+    }
     if (start < deadStart) fs.createReadStream(file, { start, end: deadStart - 1 }).pipe(res, { end: false });
     hung.push(res);
     return;
@@ -64,12 +79,13 @@ function serveFile(req, res, file, deadStart, deadEnd) {
 
 function torrentStatus(size) {
   return { hash: HASH, title: 'Dead block', stat: 3, torrent_size: size, loaded_size: size - PIECE,
-    active_peers: 5, total_peers: 9, download_speed: 300, /* connected_seeders omitted = 0 */
+    active_peers: 5, total_peers: 9, download_speed: 600 * 1024, /* readahead elsewhere; connected_seeders omitted = 0 */
     file_stats: [{ id: 1, path: 'Dead block/cbr.mp4', length: size }] };
 }
 function cacheState(size) {
   const n = Math.ceil(size / PIECE), pieces = {};
-  for (let i = 0; i < n; i++) if (i !== DEAD) pieces[i] = { Id: i, Length: PIECE, Size: PIECE, Completed: true, Priority: 0 };
+  for (let i = 0; i < n; i++) pieces[i] = { Id: i, Length: PIECE, Size: PIECE, Completed: true, Priority: 0 };
+  pieces[DEAD] = { Id: DEAD, Length: PIECE, Size: 4096, Completed: false, Priority: 5 };   /* stuck partial piece */
   return { Hash: HASH, Capacity: 1 << 30, Filled: size - PIECE, PiecesLength: PIECE, PiecesCount: n, Pieces: pieces,
     Readers: [{ Start: 0, End: n - 1, Reader: DEAD - 1 }] };
 }
@@ -98,7 +114,11 @@ function fakeServer() {
           return json(200, torrentStatus(size));
         }
         if (u.pathname === '/cache') return json(200, cacheState(size));
-        if (u.pathname.indexOf('/stream/') === 0) return serveFile(req, res, MP4, DEAD * PIECE, (DEAD + 1) * PIECE);
+        if (u.pathname.indexOf('/stream/') === 0) {
+          streamReqs++;
+          if (failNextStream > 0) { failNextStream--; console.log('  [stream] 404 (cold start)'); res.writeHead(404); return res.end(); }
+          return serveFile(req, res, MP4, DEAD * PIECE, (DEAD + 1) * PIECE);
+        }
         if (u.pathname.indexOf('/remote/') === 0 || u.pathname === '/viewed') return json(404, { error: 'not in this test' });
         let p = u.pathname.replace(/^\/tv\/?/, '') || 'index.html';
         const file = path.join(APP, p);
@@ -154,12 +174,17 @@ const player = (page) => page.evaluate(() => {
   assert(by('Done').cls === '' && by('Idle').cls === '', 'finished / idle torrents carry no tag');
   await page.screenshot({ path: path.join(__dirname, 'shots', '12-health-tags.png') }).catch(() => {});
 
-  /* --- player: stall on the dead piece --- */
+  /* --- player: cold-start error 4 is retried once, then plays; stall on the dead piece --- */
+  failNextStream = 1;
   await page.evaluate((h) => App.goFresh('player', { hash: h, index: 1, title: 'Dead block' }), HASH);
-  await sleep(3000);
+  await sleep(1000);
   let s = await player(page);
+  console.log('[player cold start]', JSON.stringify(s));
+  assert(s.retried && /重试/.test(s.state), 'first /stream 404 -> "重试中" instead of 播放失败: ' + JSON.stringify(s.state));
+  await sleep(4000);
+  s = await player(page);
   console.log('[player start]', JSON.stringify(s));
-  assert(!s.paused && s.t > 0.5, 'playing from the start');
+  assert(!s.paused && s.t > 0.5, 'playing after the automatic retry');
   assert(/无做种者/.test(s.stat), 'OSD stat line says 无做种者: ' + s.stat);
 
   /* wait until it runs into the dead piece and the stall is confirmed (deadT0 + STALL_MS + poll) */
@@ -171,6 +196,7 @@ const player = (page) => page.evaluate(() => {
   assert(s.t >= deadT0 - 1.5 && s.t <= deadT1, 'player stopped at the dead piece (t=' + s.t + ')');
   assert(new RegExp('#' + DEAD + '.*无做种者[\\s\\S]*▶▶').test(s.state), 'state line explains and offers ▶▶: ' + JSON.stringify(s.state));
   assert(s.since > 0 && Date.now() - s.since >= 12000, 'stall confirmed only after 12 s of waiting');
+  assert(true, 'confirmed although download_speed is 600 KB/s and the piece is listed as a partial');
   await page.screenshot({ path: path.join(__dirname, 'shots', '13-dead-block.png') }).catch(() => {});
 
   /* --- ▶▶ skips it --- */
@@ -190,6 +216,30 @@ const player = (page) => page.evaluate(() => {
   await key(page, 417, 1000);
   s = await player(page);
   assert(s.t >= DURATION - 2, '▶▶ while playing normally is the usual +60 s seek (t=' + s.t + ')');
+
+  /* --- webOS-style give-up: media error at the dead block -> ▶▶ still offered and reopens the stream --- */
+  mode = 'garbage';
+  await page.evaluate((h) => App.goFresh('player', { hash: h, index: 1, title: 'Dead block', startTime: 0.1 }), HASH);
+  const t2 = Date.now();
+  let err = null;
+  while (Date.now() - t2 < 60000) {
+    s = await player(page);
+    err = await page.evaluate(() => { const v = document.getElementById('video'); return v.error && v.error.code; });
+    if (s.dead) break;
+    await sleep(500);
+  }
+  console.log('[media error]', JSON.stringify(s), 'media error', err, 'after', ((Date.now() - t2) / 1000).toFixed(1), 's');
+  if (err === 2 || err === 3) {
+    assert(!!s.dead && s.dead.piece === DEAD, 'media error ' + err + ' at the dead block -> dead piece located: ' + JSON.stringify(s.dead));
+    assert(/播放中断[\s\S]*▶▶/.test(s.state), 'state says 播放中断 … ▶▶: ' + JSON.stringify(s.state));
+    mode = 'hang-free';   /* after the skip the stream must load again: serve everything */
+    await key(page, 417, 5000);
+    s = await player(page);
+    console.log('[skipped after error]', JSON.stringify(s));
+    assert(s.t > deadT1 && !s.paused && s.ready >= 3, '▶▶ after a media error reopens the stream past the dead block (t=' + s.t + ')');
+  } else {
+    console.log('  skip: headless Chrome produced no media error for a dropped connection (error=' + err + '); verified on the TV instead');
+  }
 
   await browser.close();
   hung.forEach((r) => { try { r.destroy(); } catch (e) { /* ignore */ } });

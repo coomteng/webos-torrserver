@@ -91,11 +91,15 @@ Magic Remote: hover focuses, click activates, wheel scrolls / seeks, click on th
   `active_peers` / `total_peers` of `list`: green **健康 · N 做种** (at least one complete peer, so it can finish),
   yellow **无做种者 · 可能下不完** (peers but nobody has everything: all of them wait for the same missing pieces),
   red **没有 peer**. Finished and idle torrents show nothing.
-- Dead blocks: when the player has been `waiting` for 12 s, download speed is ~0 and there is no seeder, the app asks
-  `POST /cache {action:get}` for the first piece ahead of the stream reader that is not cached (`Readers[].Reader`
-  vs `Pieces`), converts the missing run into seconds via the file's average bitrate, and shows
-  「卡在没人有的数据块 #30（共 101 块，无做种者）· 按 ▶▶ 跳过约 1 分钟」. ⏩ then seeks past it (otherwise ⏩ is +60 s).
-  One press per dead run; the next one gets the same prompt.
+- Dead blocks: when the player has been `waiting` for 12 s with no seeder, the app polls `POST /cache {action:get}`
+  for the first piece ahead of the stream reader that is not `Completed` (`Readers[].Reader` vs `Pieces`, which also
+  lists partial pieces). If that piece has not grown for 12 s it is dead — overall download speed is ignored, since
+  TorrServer keeps reading ahead into other pieces at full speed. The run is converted into seconds via the file's
+  average bitrate and shown as 「卡在没人有的数据块 #30（共 101 块，无做种者）· 按 ▶▶ 跳过约 1 分钟」. ⏩ then seeks past
+  it (otherwise ⏩ is +60 s). webOS eventually gives up on a stalled stream with a decode error; the prompt then
+  appears immediately (「播放中断：…」) and ⏩ reopens the stream past the dead block. One press per dead run.
+- Cold start: if webOS reports error 4 before the first frame (TorrServer still fetching metadata), the player
+  retries once before showing the error.
 - Resume positions live in the TV's `localStorage` (`torr.pos.<hash>`), since TorrServer's own
   `TrackTimecode` is off by default.
 
