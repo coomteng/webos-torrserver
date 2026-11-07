@@ -94,7 +94,8 @@ Magic Remote: hover focuses, click activates, wheel scrolls / seeks, click on th
   red **没有 peer**. Finished and idle torrents show nothing.
 - Torrent search (phone page): a collapsible 搜索种子 block under the paste box queries TorrServer's Torznab proxy
   directly (`GET /torznab/search/?query=`; enable Torznab and add indexers in TorrServer settings). Results are sorted by
-  seeders (max 50, green ≥10 / yellow 1–9 / red 0). 观看 = add → wait for metadata → play the biggest video, 缓存 = add
+  seeders (max 50) and carry the same health tag as the torrent list (健康 / 无做种者 / 没有 peer, from the indexer's
+  Seed/Peer snapshot, which may lag). 观看 = add → wait for metadata → play the biggest video, 缓存 = add
   only — the same flow as a pasted magnet (`Magnet`, else `Link`). The sidecar is not involved.
 - Dead blocks: when the player has been `waiting` for 12 s with no seeder, the app polls `POST /cache {action:get}`
   for the first piece ahead of the stream reader that is not `Completed` (`Readers[].Reader` vs `Pieces`, which also

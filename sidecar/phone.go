@@ -56,7 +56,7 @@ h2{font-size:15px;color:#8f94a3;margin:26px 0 8px;font-weight:600}
 .sr{padding:10px 0;border-top:1px solid #1f2330}
 .sr .n{font-size:14px;color:#fff;word-break:break-all;line-height:1.35}
 .sr .s{font-size:12px;color:#8f94a3;margin-top:3px}
-.sr .s b{font-weight:600}.sr .s b.ok{color:#22c55e}.sr .s b.mid{color:#fad778}.sr .s b.bad{color:#ff8a80}
+.sr .s b{font-weight:600;margin-right:8px}.sr .s b.ok{color:#22c55e}.sr .s b.noseed{color:#fad778}.sr .s b.nopeer{color:#ff8a80}
 .sr .a{display:flex;gap:8px;margin-top:8px}.sr .a button{padding:8px 6px;font-size:14px}
 </style></head><body>
 <h1>电视磁力</h1><div id="ctx">连接中…</div>
@@ -113,7 +113,8 @@ function go(watch){
 /* torrent search through TorrServer's Torznab proxy (GET <TS>/torznab/search/?query=): Seed/Peer/Size come as strings */
 var SEARCH_MAX=50,searchSeq=0;
 function smsg(s,err){var m=$('sm');m.textContent=s||'';m.className=err?'err':''}
-function seedCls(n){return n>=10?'ok':n>0?'mid':'bad'}
+/* same three states and labels as the torrent list, from the indexer's Seed/Peer snapshot */
+function searchHealth(x){var s=+x.Seed||0,p=+x.Peer||0;return s>0?'ok':p>0?'noseed':'nopeer'}
 function tsSearch(){
   var q=$('ts-q').value.trim();if(!q){smsg('请输入片名',1);return}
   $('ts-q').blur();var my=++searchSeq;$('ts-b').disabled=true;$('sr').innerHTML='';smsg('正在搜索…');
@@ -130,13 +131,13 @@ function renderSearch(list,q){
   list=list.filter(function(x){return x&&(x.Magnet||x.Link)});
   list.sort(function(a,b){return(+b.Seed||0)-(+a.Seed||0)});
   if(!list.length){smsg('没有找到「'+q+'」的种子（或服务端未开启搜索）');return}
-  smsg('共 '+list.length+' 条'+(list.length>SEARCH_MAX?'，显示做种最多的 '+SEARCH_MAX+' 条':''));
+  smsg('共 '+list.length+' 条'+(list.length>SEARCH_MAX?'，显示做种最多的 '+SEARCH_MAX+' 条':'')+' · 健康度按索引站报告的做种/下载数，可能有延迟');
   list.slice(0,SEARCH_MAX).forEach(function(x){
     var seed=+x.Seed||0,d=document.createElement('div');d.className='sr';
     d.innerHTML='<div class="n"></div><div class="s"></div><div class="a"><button class="cache">缓存</button><button class="watch">观看</button></div>';
     d.children[0].textContent=x.Title||x.Name||'';
-    var s=d.children[1];var b=document.createElement('b');b.className=seedCls(seed);b.textContent=seed+' 做种';s.appendChild(b);
-    s.appendChild(document.createTextNode([' · '+(+x.Peer||0)+' 下载',x.Size?' · '+x.Size:'',x.Tracker?' · '+x.Tracker:''].join('')));
+    var s=d.children[1],h=searchHealth(x),b=document.createElement('b');b.className=h;b.textContent=HEALTH[h]+(h==='ok'?' · '+seed+' 做种':'');s.appendChild(b);
+    s.appendChild(document.createTextNode([(h==='ok'?'':seed+' 做种 · ')+(+x.Peer||0)+' 下载',x.Size?' · '+x.Size:'',x.Tracker?' · '+x.Tracker:''].join('')));
     d.children[2].children[0].onclick=function(){pickResult(x,false)};
     d.children[2].children[1].onclick=function(){pickResult(x,true)};
     box.appendChild(d);

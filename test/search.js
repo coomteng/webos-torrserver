@@ -25,6 +25,7 @@ const RESULTS = [
   { Title: 'Dune (2021) [1080p]', Size: '2.7 GiB', Seed: '5', Peer: '40', Tracker: '', Magnet: 'magnet:?xt=urn:btih:' + H2, Link: 'magnet:?xt=urn:btih:' + H2, Hash: H2 },
   { Title: 'Dune Part Two (2024) [2160p]', Size: '9.1 GiB', Seed: '1260', Peer: '232', Tracker: 'yts', Magnet: 'magnet:?xt=urn:btih:' + H1, Link: '', Hash: H1 },
   { Title: 'Dune Part Two (2024) [1080p] proxy link', Size: '3.1 GiB', Seed: '0', Peer: '3', Tracker: '', Magnet: '', Link: 'http://lodestarr.example/indexers/7/dl?link=abc', Hash: H3 },
+  { Title: 'Dune 1984 dead', Size: '700 MiB', Seed: '0', Peer: '0', Tracker: '', Magnet: 'magnet:?xt=urn:btih:' + 'e'.repeat(40), Link: '', Hash: 'e'.repeat(40) },
   { Title: 'broken item without links', Size: '1 GiB', Seed: '99', Peer: '1', Magnet: '', Link: '' },
 ];
 
@@ -110,11 +111,13 @@ function postJSON(url, obj) {
   const rows = await page.evaluate(() => Array.from(document.querySelectorAll('#sr .sr')).map((r) => ({ n: r.querySelector('.n').textContent, cls: r.querySelector('.s b').className, s: r.querySelector('.s').textContent })));
   const sm = await page.$eval('#sm', (e) => e.textContent);
   console.log('[results]', JSON.stringify(rows), sm);
-  assert(rows.length === 3, 'items without Magnet/Link are dropped: ' + rows.length + ' rows');
+  assert(rows.length === 4, 'items without Magnet/Link are dropped: ' + rows.length + ' rows');
   assert(rows[0] && /2160p/.test(rows[0].n) && rows[1] && /2021/.test(rows[1].n), 'sorted by seeders (string Seed parsed as number)');
-  assert(rows[0] && rows[0].cls === 'ok' && rows[1].cls === 'mid' && rows[2].cls === 'bad', 'seed colours: ≥10 ok, 1–9 mid, 0 bad');
-  assert(rows[0] && /1260 做种 · 232 下载 · 9\.1 GiB · yts/.test(rows[0].s), 'meta line: seeders / leechers / size / tracker: ' + (rows[0] && rows[0].s));
-  assert(/共 3 条/.test(sm), 'count message: ' + sm);
+  assert(rows[0] && rows[0].cls === 'ok' && rows[1].cls === 'ok', 'any seeder -> green 健康 tag');
+  assert(rows[2] && rows[2].cls === 'noseed' && /无做种者 · 可能下不完/.test(rows[2].s), 'seed 0, peers 3 -> yellow 无做种者 · 可能下不完: ' + (rows[2] && rows[2].s));
+  assert(rows[3] && rows[3].cls === 'nopeer' && /没有 peer/.test(rows[3].s), 'seed 0, peer 0 -> red 没有 peer: ' + (rows[3] && rows[3].s));
+  assert(rows[0] && /健康 · 1260 做种.*232 下载 · 9\.1 GiB · yts/.test(rows[0].s), 'meta line: health · seeders / leechers / size / tracker: ' + (rows[0] && rows[0].s));
+  assert(/共 4 条.*健康度/.test(sm), 'count message mentions health source: ' + sm);
   await page.screenshot({ path: path.join(__dirname, 'shots', '16-phone-search.png'), fullPage: true }).catch(() => {});
 
   /* --- 观看 on the top row: magnet to TorrServer, play to the TV --- */
