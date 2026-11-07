@@ -146,6 +146,7 @@ func newPrecacheTest(t *testing.T, dir string) (*fakeTS, *Precache) {
 	p := newPrecache(Config{TorrServer: ts.srv.URL, DataDir: dir})
 	p.retryDelay = 50 * time.Millisecond
 	p.pollDelay = 20 * time.Millisecond
+	t.Cleanup(p.close) // runs before the fake's waiter release and TempDir removal
 	p.resume()
 	return ts, p
 }
@@ -247,6 +248,7 @@ func TestPrecacheResumeAfterRestartAndWatchRunningPreload(t *testing.T) {
 	p2 := newPrecache(Config{TorrServer: ts.srv.URL, DataDir: dir})
 	p2.retryDelay = 50 * time.Millisecond
 	p2.pollDelay = 20 * time.Millisecond
+	t.Cleanup(p2.close)
 	p2.resume()
 	waitFor(t, "A re-requested", func() bool { return ts.count(&ts.preloads) == 3 })
 	time.Sleep(100 * time.Millisecond)
@@ -278,6 +280,7 @@ func TestPrecacheRetriesWhileTorrServerDown(t *testing.T) {
 func TestPrecacheHTTP(t *testing.T) {
 	ts := newFakeTS(t)
 	app := newApp(Config{TorrServer: ts.srv.URL, Port: "8791", AppDir: t.TempDir(), DataDir: t.TempDir()})
+	t.Cleanup(app.precache.close)
 	srv := httptest.NewServer(app.routes())
 	t.Cleanup(srv.Close)
 

@@ -51,6 +51,7 @@ type Precache struct {
 	path string // JSON file; "" = memory only
 
 	mu      sync.Mutex
+	wg      sync.WaitGroup
 	enabled bool
 	items   map[string]*precacheItem      // by hash
 	running map[string]context.CancelFunc // hash -> cancels the start goroutine
@@ -225,7 +226,20 @@ func (p *Precache) startLocked(it *precacheItem) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	p.running[it.Hash] = cancel
+	p.wg.Add(1)
 	go p.run(ctx, it.Hash, it.Index)
+}
+
+// close cancels every running goroutine and waits for them to exit (tests;
+// in production the process just ends).
+func (p *Precache) close() {
+	p.mu.Lock()
+	for h, cancel := range p.running {
+		cancel()
+		delete(p.running, h)
+	}
+	p.mu.Unlock()
+	p.wg.Wait()
 }
 
 // stopLocked cancels the goroutine (it does not talk to TorrServer).
@@ -241,6 +255,7 @@ func (p *Precache) stopLocked(hash string) {
 // done), by preload_stop (we cancelled: ctx done, not done), or because
 // TorrServer went away (retry).
 func (p *Precache) run(ctx context.Context, hash string, index int) {
+	defer p.wg.Done()
 	defer func() {
 		p.mu.Lock()
 		if cancel, ok := p.running[hash]; ok {
