@@ -75,6 +75,7 @@ var App = (function () {
   /* ------------------------------------------------------------ phone channel */
   var Remote = (function () {
     var id = '', seq = 0, url = '', polling = false, gen = 0, listeners = [];
+    var lastState = null;   /* re-sent after (re)registering: a restarted sidecar forgets what the TV is doing */
     var backoff = 1000;
 
     function start() {
@@ -85,6 +86,7 @@ var App = (function () {
         id = r.id; seq = r.seq || 0; url = r.url || '';
         try { window.localStorage.setItem('torr.remoteId', id); } catch (e2) { /* ignore */ }
         backoff = 1000;
+        if (lastState) API.remoteState(id, lastState).then(null, function () {});
         notify('ready');
         if (!polling) poll(++gen);
       }, function () {
@@ -123,7 +125,7 @@ var App = (function () {
 
     function notify(ev) { for (var i = 0; i < listeners.length; i++) listeners[i](ev); }
     function on(fn) { listeners.push(fn); }
-    function report(st) { if (id) API.remoteState(id, st).then(null, function () {}); }
+    function report(st) { lastState = st; if (id) API.remoteState(id, st).then(null, function () {}); }
 
     return { start: start, on: on, report: report,
       id: function () { return id; }, url: function () { return url; }, qr: function () { return id ? API.remoteQr(id) + '?v=' + id : ''; } };

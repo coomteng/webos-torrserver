@@ -5,7 +5,8 @@
  * and returns metadata on the second add (as when TorrServer is still fetching it). Drives /r/<id>:
  * search -> rows sorted by seeders with colour classes -> 观看 on the top row -> TorrServer gets that
  * magnet -> the TV channel receives "play" for the biggest video. Then 缓存 on a Link-only row ->
- * TorrServer gets the Link and the TV only "added". Also: empty results and a non-array answer. */
+ * TorrServer gets the Link and the TV only "added". Also: empty results and a non-array answer, and the
+ * TV app re-reporting its state after a sidecar restart (phone page header 电视在线 / 尚未报告状态). */
 const http = require('http');
 const fs = require('fs');
 const os = require('os');
@@ -87,7 +88,7 @@ function postJSON(url, obj) {
   const bin = path.join(TMP, 'torr-remote');
   execFileSync(GOBIN, ['build', '-o', bin, '.'], { cwd: path.join(ROOT, 'sidecar'), env: Object.assign({}, process.env, { TMPDIR: process.env.TMPDIR || path.join(os.homedir(), '.cache/gotmp'), CGO_ENABLED: '0' }), stdio: 'inherit' });
   const PORT = 18000 + Math.floor(Math.random() * 1000);
-  const side = spawn(bin, [], { env: Object.assign({}, process.env, { TORR_SERVER: TS, TORR_PORT: String(PORT), TORR_LISTEN: '127.0.0.1' }), stdio: ['ignore', 'pipe', 'pipe'] });
+  const side = spawn(bin, [], { env: Object.assign({}, process.env, { TORR_SERVER: TS, TORR_PORT: String(PORT), TORR_LISTEN: '127.0.0.1', TORR_APP_DIR: path.join(ROOT, 'app') }), stdio: ['ignore', 'pipe', 'pipe'] });
   side.stderr.on('data', (d) => process.stdout.write('  [sidecar] ' + d));
   const SIDE = `http://127.0.0.1:${PORT}`;
   for (let i = 0; i < 50; i++) { try { await getJSON(SIDE + '/health'); break; } catch (e) { await sleep(100); } }
@@ -160,7 +161,24 @@ function postJSON(url, obj) {
   s2 = await page.$eval('#sm', (e) => e.textContent);
   assert(/未开启搜索/.test(s2), 'non-array answer -> 服务端未开启搜索: ' + s2);
 
+  /* --- TV app re-reports its state after the sidecar restarts (state lives in sidecar memory) --- */
+  const tv = await browser.newPage();
+  tv.on('pageerror', (e) => { failures.push('tv pageerror ' + e); console.log('  TV PAGE ERROR ' + e); });
+  await tv.evaluateOnNewDocument(() => { try { localStorage.setItem('torr.remoteId', 'srchtv'); } catch (e) {} });
+  await tv.goto(SIDE + '/tv/', { waitUntil: 'load' });
+  await sleep(2000);
+  let st = await getJSON(SIDE + '/remote/srchtv/state');
+  assert(st.view === 'home', 'TV app reports home on startup (report before registration is kept): ' + JSON.stringify(st));
+  side.kill();
+  await sleep(300);
+  const side2 = spawn(bin, [], { env: Object.assign({}, process.env, { TORR_SERVER: TS, TORR_PORT: String(PORT), TORR_LISTEN: '127.0.0.1', TORR_APP_DIR: path.join(ROOT, 'app') }), stdio: ['ignore', 'pipe', 'pipe'] });
+  for (let i = 0; i < 50; i++) { try { await getJSON(SIDE + '/health'); break; } catch (e) { await sleep(100); } }
+  st = {};
+  for (let i = 0; i < 40 && !st.view; i++) { await sleep(500); try { st = await getJSON(SIDE + '/remote/srchtv/state'); } catch (e) { st = {}; } }
+  assert(st.view === 'home', 'after a sidecar restart the TV re-registers and re-reports its state: ' + JSON.stringify(st));
+
   await browser.close();
+  side2.kill();
   side.kill();
   ts.close();
   console.log(failures.length ? `\n${failures.length} FAILED` : '\nall ok');
