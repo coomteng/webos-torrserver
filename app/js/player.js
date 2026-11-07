@@ -428,8 +428,7 @@
         if (now - stallSince < STALL_MS || now - probe.since < STALL_MS) return;
       }
       dead = d;
-      setState((errStall ? '播放中断：' : '') + '卡在没人有的数据块 #' + d.piece + (d.count > 1 ? '–' + (d.piece + d.count - 1) : '') + '（共 ' + d.total + ' 块，无做种者）\n按 ▶▶ 跳过约 ' + fmtSkip(d.seconds));
-      showOsd(true);
+      showDead(errStall);
     }, function () { deadBusy = false; });
   }
   /* /cache: Readers[].Reader is the piece the stream reader sits on; Pieces lists cached AND partially
@@ -458,6 +457,12 @@
       best.seconds = rate ? Math.ceil(best.count * c.PiecesLength / rate) + 2 : 60;
       return best;
     });
+  }
+  /* Magic Remote has no ⏩ key: → and OK skip too while the prompt is up. */
+  function showDead(interrupted) {
+    var d = dead;
+    setState((interrupted ? '播放中断：' : '') + '卡在没人有的数据块 #' + d.piece + (d.count > 1 ? '–' + (d.piece + d.count - 1) : '') + '（共 ' + d.total + ' 块，无做种者）\n按 → 或 OK 跳过约 ' + fmtSkip(d.seconds));
+    showOsd(true);
   }
   function fmtSkip(sec) { return sec < 120 ? sec + ' 秒' : Math.round(sec / 60) + ' 分钟'; }
   function skipDead() {
@@ -531,6 +536,7 @@
     var t = (video.currentTime || 0) + delta;
     if (t < 0) t = 0;
     if (isFinite(dur) && dur > 0 && t > dur - 1) t = dur - 1;
+    if (video.error) { loadFile(fileIdx, t); return; }   /* errored element ignores seeks: reopen at t */
     try { video.currentTime = t; } catch (e) { /* ignore */ }
     setState((delta > 0 ? '▶▶ +' : '◀◀ −') + Math.abs(delta) + ' 秒');
     updateTime();
@@ -591,6 +597,7 @@
         setTimeout(function () { if (active && fileIdx === fi && video.error) loadFile(fi, start, true); }, 2000);
         return;
       }
+      if (dead) { showDead(true); stopSaveTimer(); return; }   /* webOS gave up on the dead block we already named */
       var why = code === 4 ? '格式不支持或源不可达' : code === 3 ? '解码失败' : code === 2 ? '网络错误' : '错误 ' + (code || '?');
       lastErr = why;
       setState('播放失败（' + why + '）\n按返回键退出');
@@ -629,6 +636,7 @@
       }
     }
     showOsd(false);
+    if (dead && (code === 13 || code === 39 || code === 417)) { stopSeekHold(); skipDead(); return true; }
     switch (code) {
       case 13: togglePlay(); return true;
       case 37: if (e && e.repeat) seekBy(-SEEK_STEP); else startSeekHold(-1); return true;

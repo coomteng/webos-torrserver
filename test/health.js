@@ -194,14 +194,14 @@ const player = (page) => page.evaluate(() => {
   assert(!!s.dead, 'stall detected and dead piece located');
   assert(s.dead && s.dead.piece === DEAD && s.dead.count === 1, 'dead piece is #' + DEAD + ': ' + JSON.stringify(s.dead));
   assert(s.t >= deadT0 - 1.5 && s.t <= deadT1, 'player stopped at the dead piece (t=' + s.t + ')');
-  assert(new RegExp('#' + DEAD + '.*无做种者[\\s\\S]*▶▶').test(s.state), 'state line explains and offers ▶▶: ' + JSON.stringify(s.state));
+  assert(new RegExp('#' + DEAD + '.*无做种者[\\s\\S]*→ 或 OK').test(s.state), 'state line explains and offers → / OK: ' + JSON.stringify(s.state));
   assert(s.since > 0 && Date.now() - s.since >= 12000, 'stall confirmed only after 12 s of waiting');
   assert(true, 'confirmed although download_speed is 600 KB/s and the piece is listed as a partial');
   await page.screenshot({ path: path.join(__dirname, 'shots', '13-dead-block.png') }).catch(() => {});
 
-  /* --- ▶▶ skips it --- */
+  /* --- → skips it (Magic Remote has no ⏩) --- */
   const before = s.t;
-  await key(page, 417, 4000);
+  await key(page, 39, 4000);
   s = await player(page);
   console.log('[skipped]', JSON.stringify(s));
   assert(!s.dead && !s.since, 'stall state cleared after skip');
@@ -231,9 +231,9 @@ const player = (page) => page.evaluate(() => {
   console.log('[media error]', JSON.stringify(s), 'media error', err, 'after', ((Date.now() - t2) / 1000).toFixed(1), 's');
   if (err === 2 || err === 3) {
     assert(!!s.dead && s.dead.piece === DEAD, 'media error ' + err + ' at the dead block -> dead piece located: ' + JSON.stringify(s.dead));
-    assert(/播放中断[\s\S]*▶▶/.test(s.state), 'state says 播放中断 … ▶▶: ' + JSON.stringify(s.state));
+    assert(/播放中断[\s\S]*→ 或 OK/.test(s.state), 'state says 播放中断 … → 或 OK: ' + JSON.stringify(s.state));
     mode = 'hang-free';   /* after the skip the stream must load again: serve everything */
-    await key(page, 417, 5000);
+    await key(page, 13, 5000);
     s = await player(page);
     console.log('[skipped after error]', JSON.stringify(s));
     assert(s.t > deadT1 && !s.paused && s.ready >= 3, '▶▶ after a media error reopens the stream past the dead block (t=' + s.t + ')');

@@ -63,7 +63,7 @@ Developer Mode / `ares-setup-device` notes are the same as for moontv-webos.
 | --- | --- |
 | home | OK open · ↑↓ move · red ×2 delete from TorrServer · green refresh · blue big QR |
 | files | OK play (resumes if watched before) · green refresh |
-| player | OK play/pause · ←→ ±10 s (hold to repeat) · ↑↓ file strip · green subtitles · yellow next audio track · ⏪⏩ ±60 s (⏩ skips the dead block when stalled) · Back exit |
+| player | OK play/pause · ←→ ±10 s (hold to repeat) · ↑↓ file strip · green subtitles · yellow next audio track · ⏪⏩ ±60 s (→ / OK / ⏩ skip the dead block when stalled) · Back exit |
 | subtitle panel | ↑↓ choose · OK apply · ←→ delay ∓0.5 s · green/Back close |
 
 Magic Remote: hover focuses, click activates, wheel scrolls / seeks, click on the seek bar seeks.
@@ -95,9 +95,10 @@ Magic Remote: hover focuses, click activates, wheel scrolls / seeks, click on th
   for the first piece ahead of the stream reader that is not `Completed` (`Readers[].Reader` vs `Pieces`, which also
   lists partial pieces). If that piece has not grown for 12 s it is dead — overall download speed is ignored, since
   TorrServer keeps reading ahead into other pieces at full speed. The run is converted into seconds via the file's
-  average bitrate and shown as 「卡在没人有的数据块 #30（共 101 块，无做种者）· 按 ▶▶ 跳过约 1 分钟」. ⏩ then seeks past
-  it (otherwise ⏩ is +60 s). webOS eventually gives up on a stalled stream with a decode error; the prompt then
-  appears immediately (「播放中断：…」) and ⏩ reopens the stream past the dead block. One press per dead run.
+  average bitrate and shown as 「卡在没人有的数据块 #30（共 101 块，无做种者）· 按 → 或 OK 跳过约 1 分钟」. →, OK or ⏩ then seek
+  past it (the Magic Remote has no ⏩; otherwise they are +10 s / pause / +60 s). webOS eventually gives up on a stalled stream with a decode error; the prompt then
+  appears immediately (「播放中断：…」) and the skip reopens the stream past the dead block (any ←→ seek on an
+  errored element reopens the stream too). One press per dead run.
 - Cold start: if webOS reports error 4 before the first frame (TorrServer still fetching metadata), the player
   retries once before showing the error.
 - Resume positions live in the TV's `localStorage` (`torr.pos.<hash>`), since TorrServer's own
