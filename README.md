@@ -95,8 +95,19 @@ Magic Remote: hover focuses, click activates, wheel scrolls / seeks, click on th
 - Torrent search (phone page): a collapsible 搜索种子 block under the paste box queries TorrServer's Torznab proxy
   directly (`GET /torznab/search/?query=`; enable Torznab and add indexers in TorrServer settings). Results are sorted by
   seeders (max 50) and carry the same health tag as the torrent list (健康 / 无做种者 / 没有 peer, from the indexer's
-  Seed/Peer snapshot, which may lag). 观看 = add → wait for metadata → play the biggest video, 缓存 = add
-  only — the same flow as a pasted magnet (`Magnet`, else `Link`). The sidecar is not involved.
+  Seed/Peer snapshot, which may lag). 观看 = add → wait for metadata → play the biggest video, 缓存 = add →
+  background pre-cache of the biggest video — the same flow as a pasted magnet (`Magnet`, else `Link`).
+- Background pre-caching: TorrServer only downloads what a reader asks for and drops an idle torrent after 30 s, so
+  a torrent nobody watches does not download. The phone page's 后台缓存（不播放） / per-card 缓存 / per-file 缓存 buttons
+  register `{hash,index}` with the sidecar (`POST /precache`), which issues `GET /stream?link=&index=&preload&stat` —
+  TorrServer's own sequential preload (state 2 "Torrent preload", exempt from the idle timeout; with the usual
+  `CacheSize`/`PreloadCache` it covers the whole file). The request returns when the preload ends. 停止缓存 and the
+  header switch **后台缓存：开/关** send the fork's `{"action":"preload_stop"}` ([coomteng/TorrServer](https://github.com/coomteng/TorrServer)),
+  which ends the preload without dropping the torrent (a TV streaming it is unaffected). The switch keeps the list
+  and resumes from the pieces on disk when turned on again. The list lives in `TORR_DATA_DIR/precache.json`
+  (set it: TorrServer forgets running preloads on restart; the sidecar re-sends unfinished items on boot and
+  retries every 30 s while TorrServer is unreachable). Items run in parallel; no rate limit or disk cap — see TODO.
+  Finished torrents stop seeding (`StopSeedingWhenCached`) and close 30 s later; the pieces stay on disk.
 - Chinese titles: the indexers only have English release names, and TPB answers an unmatched query with its top-100.
   A query containing Han characters first goes to the sidecar's `GET /title?q=` (Wikidata entity search in Chinese →
   English label + year of film/series items; cached 24 h, 1 s spacing, 30 s back-off on 429). The newest released title

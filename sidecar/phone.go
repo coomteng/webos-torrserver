@@ -28,6 +28,12 @@ h2{font-size:15px;color:#8f94a3;margin:26px 0 8px;font-weight:600}
 .t .a{display:flex;gap:8px;margin-top:10px}
 .t .a button{padding:9px 6px;font-size:14px}
 .t .a .del{flex:0 0 auto;background:#3a1f22;color:#ff8a80;padding:9px 14px}
+.t .a .pc{background:#1f2a3a;color:#9ecbff}.t .a .pc.on{background:#3a2f1a;color:#fad778}
+.t .s b.pc{color:#9ecbff}.t .s b.pcdone{color:#22c55e}.t .s b.pcoff{color:#8f94a3}.t .s b.pcerr{color:#ff8a80}
+.hdr{display:flex;align-items:center;justify-content:space-between;margin:26px 0 8px}.hdr h2{margin:0}
+#pcsw{flex:none;font-size:13px;font-weight:600;padding:6px 12px;border-radius:16px;background:#1a1d28;color:#8f94a3;border:1px solid #2a2f40}
+#pcsw.on{border-color:#fad778;color:#fad778}
+.f button.pc{background:#1f2a3a;color:#9ecbff}.f button.pc.on{background:#3a2f1a;color:#fad778}
 .files{margin-top:8px}
 .f{display:flex;align-items:center;gap:8px;padding:8px 0;border-top:1px solid #1f2330;font-size:14px}
 .f .fn{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#d6d9e2}
@@ -65,12 +71,12 @@ h2{font-size:15px;color:#8f94a3;margin:26px 0 8px;font-weight:600}
 <h1>电视磁力</h1><div id="ctx">连接中…</div>
 <textarea id="t" placeholder="粘贴 magnet:?xt=urn:btih:… 、40 位 infohash 或 .torrent 链接" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
 <button class="paste" id="pb" onclick="pasteIn()">从剪贴板粘贴</button>
-<div class="btns"><button class="cache" id="bc" onclick="go(false)">缓存（不播放）</button><button class="watch" id="bw" onclick="go(true)">在电视上观看</button></div>
+<div class="btns"><button class="cache" id="bc" onclick="go(false)">后台缓存（不播放）</button><button class="watch" id="bw" onclick="go(true)">在电视上观看</button></div>
 <div id="msg"></div>
 <details id="srch"><summary>搜索种子</summary>
 <form class="q" onsubmit="tsSearch();return false"><input id="ts-q" type="search" placeholder="片名，如 Dune 2024" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="search"><button id="ts-b" type="submit">搜索</button></form>
 <div id="tc"></div><div id="sm"></div><div id="sr"></div></details>
-<h2>电视上的种子</h2><div id="list"><div class="empty">加载中…</div></div>
+<div class="hdr"><h2>电视上的种子</h2><button id="pcsw" onclick="pcToggleAll()" title="后台缓存总开关">后台缓存 …</button></div><div id="list"><div class="empty">加载中…</div></div>
 <script>
 var ID=__ID__, TS=__TS__;
 var VIDEO=/\.(mkv|mp4|m4v|avi|mov|ts|m2ts|mpg|mpeg|webm|wmv|flv|vob|iso|3gp)$/i;
@@ -103,8 +109,8 @@ function go(watch){
   ts('/torrents',{action:'add',link:link,save_to_db:true}).then(function(st){
     var hash=st&&st.hash;if(!hash)throw new Error('TorrServer 没有返回 hash');
     tell({action:'added',hash:hash,title:st.title||''}).catch(function(){});
-    if(!watch){msg('已添加到电视缓存 ✓');$('t').value='';busy(false);load();return}
     return waitInfo(hash,40).then(function(full){
+      if(!watch){var v0=videoFiles(full);if(!v0.length)throw new Error('种子里没有视频文件');return pcAdd(hash,v0[0].id,full.title||'').then(function(){msg('已加入后台缓存：'+(v0[0].path.split('/').pop())+(PC.enabled?'':'（总开关已关，打开后开始下载）')+' ✓');$('t').value='';busy(false);load()})}
       var vf=videoFiles(full);
       if(!vf.length)throw new Error('种子里没有视频文件');
       return tell({action:'play',hash:hash,index:vf[0].id,title:full.title||''}).then(function(){
@@ -176,7 +182,7 @@ function renderSearch(list,q,via){
 function pickResult(x,watch){$('t').value=x.Magnet||x.Link;go(watch);window.scrollTo(0,0)}
 function wake(hash){return ts('/torrents',{action:'add',link:hash,save_to_db:true})}
 function playFile(hash,id,title){tell({action:'play',hash:hash,index:id,title:title}).then(function(){msg('已发送到电视 ✓')},function(e){msg(e.message,1)})}
-function del(hash,title){if(!confirm('从电视删除「'+title+'」？'))return;ts('/torrents',{action:'rem',hash:hash}).then(function(){tell({action:'added',hash:hash}).catch(function(){});load()},function(e){msg(e.message,1)})}
+function del(hash,title){if(!confirm('从电视删除「'+title+'」？'))return;if(PC.items[hash])pcStop(hash).catch(function(){});ts('/torrents',{action:'rem',hash:hash}).then(function(){tell({action:'added',hash:hash}).catch(function(){});load()},function(e){msg(e.message,1)})}
 function toggle(hash){open[hash]=!open[hash];load()}
 /* ---- external subtitles (sidecar /subs/*) ---- */
 var SUBS=__SUBS__; /* {enabled, sources} */
@@ -203,6 +209,26 @@ function subPanel(h,id,fname,title){var st=sget(h,id),k=skey(h,id);var d=documen
   var up=document.createElement('label');up.className='up';up.innerHTML='<span>上传字幕文件（.srt / .ass / .zip）</span><input type="file" accept=".srt,.ass,.ssa,.vtt,.zip">';up.lastChild.onchange=function(){subUpload(h,id,fname,title,this)};d.appendChild(up);
   var m=document.createElement('div');m.className='m'+(st.err?' err':'');m.textContent=st.msg;d.appendChild(m);
   return d}
+/* ---- background pre-caching (sidecar /precache; TorrServer preload + fork preload_stop) ---- */
+var PC={enabled:true,items:{}}; /* hash -> {index,title,done,error} */
+function pcApi(path,body){return fetch(path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}).then(function(r){return r.text().then(function(t){var j=null;try{j=t?JSON.parse(t):null}catch(e){}if(!r.ok)throw new Error((j&&j.error)||('HTTP '+r.status));return j})})}
+function pcLoad(){return pcApi('/precache').then(function(f){PC.enabled=!!(f&&f.enabled);PC.items={};((f&&f.items)||[]).forEach(function(it){PC.items[it.hash]=it});pcSwitch()},function(){})}
+function pcSwitch(){var b=$('pcsw');b.className=PC.enabled?'on':'';b.textContent=PC.enabled?'后台缓存：开':'后台缓存：关'}
+function pcToggleAll(){var on=!PC.enabled;if(!on&&!confirm('关闭后台缓存？正在缓存的种子会停止（已下载部分保留，再打开时继续）'))return;$('pcsw').disabled=true;pcApi('/precache/enabled',{enabled:on}).then(function(){PC.enabled=on;pcSwitch();msg(on?'后台缓存已打开，未完成的继续下载':'后台缓存已关闭')},function(e){msg(e.message,1)}).then(function(){$('pcsw').disabled=false;pcLoad().then(load)})}
+function pcAdd(hash,index,title){return pcApi('/precache',{hash:hash,index:index,title:title}).then(function(r){if(r&&r.item)PC.items[hash]=r.item;if(r&&typeof r.enabled==='boolean'){PC.enabled=r.enabled;pcSwitch()}})}
+function pcStop(hash){return pcApi('/precache/stop',{hash:hash}).then(function(){delete PC.items[hash]})}
+/* "缓存" on a card: biggest video, or the file the item already names */
+function pcCard(t,vf){var it=PC.items[t.hash];if(it&&!it.done){pcStop(t.hash).then(function(){msg('已停止后台缓存');load()},function(e){msg(e.message,1)});return}
+  var go2=function(st){var v=videoFiles(st);if(!v.length)throw new Error('种子里没有视频文件');return pcAdd(t.hash,v[0].id,st.title||t.title||'').then(function(){msg('已加入后台缓存：'+v[0].path.split('/').pop()+' ✓');load()})};
+  (vf.length?Promise.resolve(t):wake(t.hash)).then(go2).catch(function(e){msg(e.message,1)})}
+function pcFile(t,f){var it=PC.items[t.hash];if(it&&!it.done&&it.index===f.id){pcStop(t.hash).then(function(){msg('已停止后台缓存');load()},function(e){msg(e.message,1)});return}
+  pcAdd(t.hash,f.id,t.title||'').then(function(){msg('已加入后台缓存：'+f.path.split('/').pop()+' ✓');load()},function(e){msg(e.message,1)})}
+/* label for the card subtitle */
+function pcLabel(t){var it=PC.items[t.hash];if(!it)return null;var pct=t.torrent_size?Math.min(100,100*(t.loaded_size||0)/t.torrent_size):0;
+  if(it.done)return{cls:'pcdone',txt:'● 已完整缓存'};
+  if(!PC.enabled)return{cls:'pcoff',txt:'● 待缓存（总开关已关）'};
+  if(it.error)return{cls:'pcerr',txt:'● 缓存重试中：'+it.error};
+  return{cls:'pc',txt:'● 后台缓存中 · '+pct.toFixed(pct<10?1:0)+'%'}}
 function render(list){
   var box=$('list');box.innerHTML='';
   if(!list||!list.length){box.innerHTML='<div class="empty">电视上还没有种子。在上面粘贴磁力链接开始。</div>';return}
@@ -212,19 +238,22 @@ function render(list){
     var pct=t.torrent_size?Math.min(100,100*(t.loaded_size||0)/t.torrent_size):0;
     var vf=videoFiles(t);
     var sub=[t.stat_string||'',t.torrent_size?fmtSize(t.torrent_size):'',t.total_peers?t.total_peers+' peers':'',t.download_speed?fmtSize(t.download_speed)+'/s':''].filter(Boolean).join(' · ');
-    d.innerHTML='<div class="n"></div><div class="s"></div><div class="bar"><i></i></div><div class="a"><button class="watch">观看</button><button class="cache">'+(vf.length?'文件 ('+vf.length+')':'文件')+'</button><button class="del">删除</button></div><div class="files"></div>';
+    var pcIt=PC.items[t.hash],pcOn=!!(pcIt&&!pcIt.done);
+    d.innerHTML='<div class="n"></div><div class="s"></div><div class="bar"><i></i></div><div class="a"><button class="watch">观看</button><button class="cache">'+(vf.length?'文件 ('+vf.length+')':'文件')+'</button><button class="pc'+(pcOn?' on':'')+'">'+(pcOn?'停止缓存':'缓存')+'</button><button class="del">删除</button></div><div class="files"></div>';
     d.children[0].textContent=t.title||t.name||t.hash;d.children[1].textContent=sub;d.children[2].firstChild.style.width=pct.toFixed(1)+'%';
+    var pl=pcLabel(t);if(pl){var pb=document.createElement('b');pb.className=pl.cls;pb.textContent=pl.txt;d.children[1].insertBefore(pb,d.children[1].firstChild)}
     var hl=health(t);if(hl){var b=document.createElement('b');b.className=hl;b.textContent=HEALTH[hl]+(hl==='ok'?' · '+t.connected_seeders+' 做种':'');d.children[1].insertBefore(b,d.children[1].firstChild)}
     var a=d.children[3];
     a.children[0].onclick=function(){if(vf.length){playFile(t.hash,vf[0].id,t.title||'');return}msg('唤醒种子…');wake(t.hash).then(function(st){var v=videoFiles(st);if(!v.length)throw new Error('还没有文件信息，稍等再试');playFile(t.hash,v[0].id,st.title||'')}).catch(function(e){msg(e.message,1)})};
     a.children[0].disabled=t.stat===1;
     a.children[1].onclick=function(){if(vf.length){toggle(t.hash);return}wake(t.hash).then(function(){open[t.hash]=true;load()},function(e){msg(e.message,1)})};a.children[1].disabled=t.stat===1;
-    a.children[2].onclick=function(){del(t.hash,t.title||t.name||t.hash)};
-    if(open[t.hash]){var fl=d.children[4];var all=(t.file_stats||[]).filter(function(f){return VIDEO.test(f.path)});all.sort(function(x,y){return x.path<y.path?-1:1});all.forEach(function(f){var fname=f.path.split('/').pop();var r=document.createElement('div');r.className='f';r.innerHTML='<span class="fn"></span><span class="fs"></span>'+(SUBS.enabled?'<button class="sub">字幕</button>':'')+'<button>播放</button>';r.children[0].textContent=fname;r.children[1].textContent=fmtSize(f.length);if(SUBS.enabled){r.children[2].onclick=function(){subToggle(t.hash,f.id,fname)}}r.children[r.children.length-1].onclick=function(){playFile(t.hash,f.id,t.title||'')};fl.appendChild(r);if(SUBS.enabled&&subOpen[skey(t.hash,f.id)])fl.appendChild(subPanel(t.hash,f.id,fname,t.title||''))})}
+    a.children[2].onclick=function(){pcCard(t,vf)};a.children[2].disabled=t.stat===1;
+    a.children[3].onclick=function(){del(t.hash,t.title||t.name||t.hash)};
+    if(open[t.hash]){var fl=d.children[4];var all=(t.file_stats||[]).filter(function(f){return VIDEO.test(f.path)});all.sort(function(x,y){return x.path<y.path?-1:1});all.forEach(function(f){var fname=f.path.split('/').pop();var r=document.createElement('div');r.className='f';var fOn=!!(pcIt&&!pcIt.done&&pcIt.index===f.id);r.innerHTML='<span class="fn"></span><span class="fs"></span>'+(SUBS.enabled?'<button class="sub">字幕</button>':'')+'<button class="pc'+(fOn?' on':'')+'">'+(fOn?'停止':'缓存')+'</button><button>播放</button>';r.children[0].textContent=fname;r.children[1].textContent=fmtSize(f.length);if(SUBS.enabled){r.children[2].onclick=function(){subToggle(t.hash,f.id,fname)}}r.children[r.children.length-2].onclick=function(){pcFile(t,f)};r.children[r.children.length-1].onclick=function(){playFile(t.hash,f.id,t.title||'')};fl.appendChild(r);if(SUBS.enabled&&subOpen[skey(t.hash,f.id)])fl.appendChild(subPanel(t.hash,f.id,fname,t.title||''))})}
     box.appendChild(d);
   });
 }
-function load(){var ae=document.activeElement;if(ae&&ae.tagName==='INPUT'&&ae.id&&ae.id.indexOf('sq-')===0){var k=ae.id.slice(3);if(subState[k])subState[k].q=ae.value;if(!loadForced){return}}loadForced=false;ts('/torrents',{action:'list'}).then(render,function(e){$('list').innerHTML='<div class="empty">连不上 TorrServer（'+TS+'）</div>'})}
+function load(){var ae=document.activeElement;if(ae&&ae.tagName==='INPUT'&&ae.id&&ae.id.indexOf('sq-')===0){var k=ae.id.slice(3);if(subState[k])subState[k].q=ae.value;if(!loadForced){return}}loadForced=false;pcLoad().then(function(){return ts('/torrents',{action:'list'})}).then(render,function(e){$('list').innerHTML='<div class="empty">连不上 TorrServer（'+TS+'）</div>'})}
 function st(){fetch('/remote/'+ID+'/state').then(function(r){return r.ok?r.json():null}).then(function(s){
   var c=$('ctx');if(!s||!s.t){c.textContent='电视应用尚未报告状态（请在电视上打开应用）';return}
   var age=Math.round(Date.now()/1000-s.t);

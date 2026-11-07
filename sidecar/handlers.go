@@ -11,10 +11,11 @@ import (
 )
 
 type App struct {
-	cfg    Config
-	remote *Remote
-	subs   *Subs
-	titles *Titles
+	cfg      Config
+	remote   *Remote
+	subs     *Subs
+	titles   *Titles
+	precache *Precache
 }
 
 func newApp(cfg Config) *App {
@@ -22,7 +23,9 @@ func newApp(cfg Config) *App {
 	if cfg.Wikidata != "" {
 		t.Base = cfg.Wikidata
 	}
-	return &App{cfg: cfg, remote: newRemote(), subs: newSubs(cfg), titles: t}
+	a := &App{cfg: cfg, remote: newRemote(), subs: newSubs(cfg), titles: t, precache: newPrecache(cfg)}
+	a.precache.resume()
+	return a
 }
 
 // ---------------------------------------------------------------- response helpers
@@ -161,6 +164,8 @@ func (a *App) get(w http.ResponseWriter, r *http.Request, p string) {
 		a.subsGet(w, r, p)
 	case p == "/title":
 		a.titleGet(w, r)
+	case p == "/precache":
+		a.precacheGet(w, r)
 	default:
 		sendError(w, r, 404, "not found")
 	}
@@ -181,6 +186,8 @@ func (a *App) post(w http.ResponseWriter, r *http.Request, p string) {
 		a.remoteNew(w, r, body)
 	case strings.HasPrefix(p, "/remote/"):
 		a.remotePost(w, r, p, body)
+	case p == "/precache" || strings.HasPrefix(p, "/precache/"):
+		a.precachePost(w, r, p, body)
 	default:
 		sendError(w, r, 404, "not found")
 	}
