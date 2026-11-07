@@ -29,6 +29,7 @@ serves the static pages. TorrServer stays stock.
 | `sidecar/` | Go, stdlib + `skip2/go-qrcode` + `x/text`. `/remote/*` channel, `/r/<id>` phone page, `/tv/` app hosting, `/sim` browser simulator, `/config`, `/subs/*` external subtitles (`sidecar/subs/`). |
 | `app/` | TV app. No build step, ES5 only (`tools/es5check.sh`). `nav.js` (focus + Magic Remote pointer) is copied from [moontv-webos](https://github.com/coomteng/moontv-webos). |
 | `sim/` | 1920×1080 iframe + on-screen remote for desktop testing. |
+| `test/search.js` | Phone-page torrent search end-to-end (real sidecar + fake TorrServer). |
 | `test/walk.js` | Headless end-to-end walk against a live sidecar + TorrServer (puppeteer-core). |
 | `test/audio.js` | Self-contained headless check of audio-track switching (ffmpeg fixture + fake TorrServer). |
 | `test/subs.js` | Headless check of external subtitles: real sidecar binary + fake assrt.net + fake TorrServer. |
@@ -91,6 +92,10 @@ Magic Remote: hover focuses, click activates, wheel scrolls / seeks, click on th
   `active_peers` / `total_peers` of `list`: green **健康 · N 做种** (at least one complete peer, so it can finish),
   yellow **无做种者 · 可能下不完** (peers but nobody has everything: all of them wait for the same missing pieces),
   red **没有 peer**. Finished and idle torrents show nothing.
+- Torrent search (phone page): a collapsible 搜索种子 block under the paste box queries TorrServer's Torznab proxy
+  directly (`GET /torznab/search/?query=`; enable Torznab and add indexers in TorrServer settings). Results are sorted by
+  seeders (max 50, green ≥10 / yellow 1–9 / red 0). 观看 = add → wait for metadata → play the biggest video, 缓存 = add
+  only — the same flow as a pasted magnet (`Magnet`, else `Link`). The sidecar is not involved.
 - Dead blocks: when the player has been `waiting` for 12 s with no seeder, the app polls `POST /cache {action:get}`
   for the first piece ahead of the stream reader that is not `Completed` (`Readers[].Reader` vs `Pieces`, which also
   lists partial pieces). If that piece has not grown for 12 s it is dead — overall download speed is ignored, since

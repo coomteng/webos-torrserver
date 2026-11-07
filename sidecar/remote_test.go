@@ -138,6 +138,9 @@ func TestQRAndPhonePage(t *testing.T) {
 	if r.StatusCode != 200 || !strings.Contains(s, `var ID="qrtest", TS="http://ts.example:8090"`) {
 		t.Fatalf("phone page: %d %q", r.StatusCode, s[:200])
 	}
+	if !strings.Contains(s, `id="ts-q"`) || !strings.Contains(s, "/torznab/search/?query=") {
+		t.Fatal("phone page lacks the torrent search block")
+	}
 	r, _ = http.Get(srv.URL + "/r/..%2F..")
 	if r.StatusCode != 404 {
 		t.Fatalf("bad id: %d", r.StatusCode)

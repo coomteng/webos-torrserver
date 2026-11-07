@@ -46,12 +46,27 @@ h2{font-size:15px;color:#8f94a3;margin:26px 0 8px;font-weight:600}
 .sp .m{font-size:12px;color:#8f94a3;margin-top:6px;min-height:14px}.sp .m.err{color:#ff8a80}
 .sp .up{display:block;margin-top:8px;font-size:12px;color:#8f94a3}.sp .up input{display:none}
 .sp .up span{display:inline-block;border:1px dashed #2a2f40;border-radius:8px;padding:6px 10px}
+#srch{margin-top:12px;background:#161925;border-radius:12px;padding:0 12px}
+#srch summary{font-size:15px;color:#fad778;padding:12px 0;cursor:pointer;font-weight:600}
+#srch .q{display:flex;gap:8px;padding-bottom:10px}
+#srch input{flex:1;min-width:0;font-size:16px;padding:10px 12px;border-radius:10px;border:2px solid #2a2f40;background:#1a1d28;color:#fff;outline:none}
+#srch input:focus{border-color:#fad778}
+#srch .q button{flex:none;background:#fad778;color:#111;padding:10px 16px;font-size:15px}
+#sm{font-size:13px;color:#8f94a3;min-height:16px;padding-bottom:8px}#sm.err{color:#ff8a80}
+.sr{padding:10px 0;border-top:1px solid #1f2330}
+.sr .n{font-size:14px;color:#fff;word-break:break-all;line-height:1.35}
+.sr .s{font-size:12px;color:#8f94a3;margin-top:3px}
+.sr .s b{font-weight:600}.sr .s b.ok{color:#22c55e}.sr .s b.mid{color:#fad778}.sr .s b.bad{color:#ff8a80}
+.sr .a{display:flex;gap:8px;margin-top:8px}.sr .a button{padding:8px 6px;font-size:14px}
 </style></head><body>
 <h1>电视磁力</h1><div id="ctx">连接中…</div>
 <textarea id="t" placeholder="粘贴 magnet:?xt=urn:btih:… 、40 位 infohash 或 .torrent 链接" autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
 <button class="paste" id="pb" onclick="pasteIn()">从剪贴板粘贴</button>
 <div class="btns"><button class="cache" id="bc" onclick="go(false)">缓存（不播放）</button><button class="watch" id="bw" onclick="go(true)">在电视上观看</button></div>
 <div id="msg"></div>
+<details id="srch"><summary>搜索种子</summary>
+<form class="q" onsubmit="tsSearch();return false"><input id="ts-q" type="search" placeholder="片名，如 Dune 2024" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="search"><button id="ts-b" type="submit">搜索</button></form>
+<div id="sm"></div><div id="sr"></div></details>
 <h2>电视上的种子</h2><div id="list"><div class="empty">加载中…</div></div>
 <script>
 var ID=__ID__, TS=__TS__;
@@ -95,6 +110,40 @@ function go(watch){
     });
   }).catch(function(e){msg(e.message||String(e),1);busy(false)});
 }
+/* torrent search through TorrServer's Torznab proxy (GET <TS>/torznab/search/?query=): Seed/Peer/Size come as strings */
+var SEARCH_MAX=50,searchSeq=0;
+function smsg(s,err){var m=$('sm');m.textContent=s||'';m.className=err?'err':''}
+function seedCls(n){return n>=10?'ok':n>0?'mid':'bad'}
+function tsSearch(){
+  var q=$('ts-q').value.trim();if(!q){smsg('请输入片名',1);return}
+  $('ts-q').blur();var my=++searchSeq;$('ts-b').disabled=true;$('sr').innerHTML='';smsg('正在搜索…');
+  var slow=setTimeout(function(){if(my===searchSeq)smsg('正在搜索…（搜索站响应慢，再等等）')},12000);
+  fetch(TS+'/torznab/search/?query='+encodeURIComponent(q)).then(function(r){if(!r.ok)throw new Error('TorrServer '+r.status);return r.text()}).then(function(t){
+    var list=null;try{list=t?JSON.parse(t):[]}catch(e){throw new Error('搜索返回无法解析')}
+    if(my!==searchSeq)return;
+    if(!Array.isArray(list))throw new Error('服务端未开启搜索（TorrServer 设置里的 Torznab）');
+    renderSearch(list,q);
+  }).catch(function(e){if(my===searchSeq)smsg(e.message||String(e),1)}).then(function(){clearTimeout(slow);if(my===searchSeq)$('ts-b').disabled=false});
+}
+function renderSearch(list,q){
+  var box=$('sr');box.innerHTML='';
+  list=list.filter(function(x){return x&&(x.Magnet||x.Link)});
+  list.sort(function(a,b){return(+b.Seed||0)-(+a.Seed||0)});
+  if(!list.length){smsg('没有找到「'+q+'」的种子（或服务端未开启搜索）');return}
+  smsg('共 '+list.length+' 条'+(list.length>SEARCH_MAX?'，显示做种最多的 '+SEARCH_MAX+' 条':''));
+  list.slice(0,SEARCH_MAX).forEach(function(x){
+    var seed=+x.Seed||0,d=document.createElement('div');d.className='sr';
+    d.innerHTML='<div class="n"></div><div class="s"></div><div class="a"><button class="cache">缓存</button><button class="watch">观看</button></div>';
+    d.children[0].textContent=x.Title||x.Name||'';
+    var s=d.children[1];var b=document.createElement('b');b.className=seedCls(seed);b.textContent=seed+' 做种';s.appendChild(b);
+    s.appendChild(document.createTextNode([' · '+(+x.Peer||0)+' 下载',x.Size?' · '+x.Size:'',x.Tracker?' · '+x.Tracker:''].join('')));
+    d.children[2].children[0].onclick=function(){pickResult(x,false)};
+    d.children[2].children[1].onclick=function(){pickResult(x,true)};
+    box.appendChild(d);
+  });
+}
+/* reuse the paste flow: fill the box and go() (add -> wait for metadata -> biggest video -> tell the TV) */
+function pickResult(x,watch){$('t').value=x.Magnet||x.Link;go(watch);window.scrollTo(0,0)}
 function wake(hash){return ts('/torrents',{action:'add',link:hash,save_to_db:true})}
 function playFile(hash,id,title){tell({action:'play',hash:hash,index:id,title:title}).then(function(){msg('已发送到电视 ✓')},function(e){msg(e.message,1)})}
 function del(hash,title){if(!confirm('从电视删除「'+title+'」？'))return;ts('/torrents',{action:'rem',hash:hash}).then(function(){tell({action:'added',hash:hash}).catch(function(){});load()},function(e){msg(e.message,1)})}

@@ -17,6 +17,7 @@ sidecar 不代理任何媒体或 API 请求，只在内存里保存手机→电�
 | `sidecar/` | Go（stdlib + `skip2/go-qrcode`）：`/remote/*` 通道、`/r/<id>` 手机页、`/tv/` 托管电视 APP、`/sim` 模拟器、`/config` |
 | `app/` | 电视 APP，无构建、纯 ES5（`tools/es5check.sh` 门禁）。`nav.js` 来自 [moontv-webos](https://github.com/coomteng/moontv-webos) |
 | `sim/` | 浏览器模拟器（1920×1080 iframe + 虚拟遥控器） |
+| `test/search.js` | 手机页搜索端到端测试（真 sidecar + 假 TorrServer） |
 | `test/walk.js` | puppeteer 端到端测试，对着真实 sidecar + TorrServer 跑 |
 | `compose.yml` | TorrServer + sidecar 一个 stack |
 
@@ -56,6 +57,7 @@ Magic Remote：悬停聚焦、点击确认、滚轮滚动/快进快退、点进�
 - 多音轨 MKV/MP4 在 OSD 右上显示「♪ 音轨 n/N · 语言」，黄键（或点击徽标）循环切换 `video.audioTracks[i].enabled`；
   选过的语言记在 `torr.lang`，下一文件自动选同语言。依赖 `HTMLMediaElement.audioTracks`（webOS ≥ 4 有；桌面 Chrome 需 `--enable-blink-features=AudioVideoTracks`）。
 - 种子健康度：首页和手机页每个种子显示标签——绿「健康 · N 做种」（有完整副本，一定能下完）、黄「无做种者 · 可能下不完」（有 peer 但没人有全部数据，大家卡在同几块）、红「没有 peer」。下完或未启动不显示。数据来自 TorrServer `list` 的 `connected_seeders`。
+- 手机页搜索种子：粘贴框下方「搜索种子」折叠块，输入片名回车，直接请求 TorrServer 的 Torznab 代理（`GET /torznab/search/?query=`，需在 TorrServer 设置里开启 Torznab 并配置索引器），结果按做种数排序、最多 50 条，做种数绿 ≥10 / 黄 1–9 / 红 0；「观看」= 添加 → 等元数据 → 播最大的视频文件，「缓存」= 只添加，和粘贴磁力走同一流程（链接取 `Magnet`，没有则 `Link`）。sidecar 不参与。
 - 一键跳过死块：播放中若「缓冲中」持续 12 秒、无做种者，且播放位置之后第一个没下完的块（`/cache` 里 `Completed=false`）12 秒没有增长，App 判定死块（不看整体下载速度——TorrServer 预读别的块时速度照样很高），按文件平均码率换算成秒，提示「卡在没人有的数据块 #30（共 101 块，无做种者）· 按 → 或 OK 跳过约 1 分钟」，按 →、OK 或 ⏩ 直接跳过去续播（Magic Remote 没有 ⏩；不卡时它们照常是 +10 秒 / 暂停 / +60 秒）。webOS 卡太久会自己报解码错误并暂停，此时同样立即提示「播放中断：…」，跳过会重新打开流到死块之后；出错后普通的 ←→ 快进快退也会重新打开流。一次跳一段，下一段死块再提示。
 - 冷启动重试：刚起播时 TorrServer 还在取元数据/首块，webOS 可能报「格式不支持或源不可达」，App 自动重试一次再报错。
 - 外挂字幕：绿键打开面板——本文件已有的字幕（可选**两条**：第一条显示在屏幕下方、第二条在上方，比如简中 + 英文学英语；「交换上下」对调）、在线搜索（射手网伪 assrt.net，搜索词由发布名自动清洗）、延时调节。
