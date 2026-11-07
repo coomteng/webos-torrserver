@@ -34,6 +34,16 @@
     return parts.join(' · ');
   }
 
+  /* Health tag: can this torrent finish? (API.health: ok / noseed / nopeer / '') */
+  var HEALTH = { ok: '健康', noseed: '无做种者 · 可能下不完', nopeer: '没有 peer' };
+  function healthEl(t) {
+    var h = API.health(t);
+    if (!h) return null;
+    var txt = HEALTH[h];
+    if (h === 'ok') txt += ' · ' + t.connected_seeders + ' 做种';
+    return UI.text('span', 'health ' + h, txt);
+  }
+
   function render() {
     var box = $('home-list');
     var focusHash = null;
@@ -44,7 +54,10 @@
       var t = list[i];
       var row = UI.el('div', 'row', { 'data-hash': t.hash || '' });
       row.appendChild(UI.text('div', 'name', t.title || t.name || t.hash));
-      row.appendChild(UI.text('div', 'meta', statText(t)));
+      var meta = UI.text('div', 'meta', statText(t));
+      var he = healthEl(t);
+      if (he) meta.insertBefore(he, meta.firstChild);
+      row.appendChild(meta);
       var bar = UI.el('div', 'bar');
       var fill = UI.el('div', 'fill');
       fill.style.width = (t.torrent_size ? Math.min(100, 100 * (t.loaded_size || 0) / t.torrent_size) : 0).toFixed(1) + '%';

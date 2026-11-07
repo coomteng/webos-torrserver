@@ -37,6 +37,12 @@ img { -webkit-user-drag: none; }
        -webkit-transition: border-color 0.15s, background 0.15s; transition: border-color 0.15s, background 0.15s; }
 .row .name { font-size: 32px; line-height: 42px; color: #e8e8ec; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .row .meta { font-size: 23px; line-height: 32px; color: #8f94a3; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* swarm health tag in the meta line: coloured dot + text */
+.row .health { display: inline-block; margin-right: 14px; padding-left: 22px; position: relative; }
+.row .health::before { content: ""; position: absolute; left: 0; top: 10px; width: 12px; height: 12px; border-radius: 6px; background: #8f94a3; }
+.row .health.ok { color: #22c55e; } .row .health.ok::before { background: #22c55e; }
+.row .health.noseed { color: #fad778; } .row .health.noseed::before { background: #fad778; }
+.row .health.nopeer { color: #ff8a80; } .row .health.nopeer::before { background: #ff8a80; }
 .row .bar { height: 6px; background: #262a38; border-radius: 3px; margin-top: 12px; overflow: hidden; }
 .row .bar .fill { height: 100%; background: #22c55e; }
 .row.focus { border-color: #fad778; background: rgba(250,215,120,0.10); }

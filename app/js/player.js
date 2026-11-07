@@ -25,6 +25,12 @@
   var subItems = [];       /* rows in the panel: {kind:'off'|'saved'|'search'|'result'|'delay-'|'delay+'|'head', ...} */
   var subResults = null;   /* last search results for this file */
   var subBusy = false;
+  /* dead-block detection: the swarm has no seeder and the player has been waiting on data that
+   * nobody delivers. stallSince = when `waiting` started (0 = playing fine); dead = what /cache said
+   * about the first missing piece ahead of the reader, set once the stall is confirmed. */
+  var STALL_MS = 12000, STALL_SPEED = 10 * 1024;
+  var stallSince = 0, dead = null, deadBusy = false;
+  var lastSeeders = -1;
 
   function $(id) { return UI.$(id); }
 
@@ -390,9 +396,67 @@
       var parts = [];
       if (st.download_speed > 1024) parts.push('↓ ' + UI.fmtSize(st.download_speed) + '/s');
       if (st.active_peers || st.total_peers) parts.push((st.active_peers || 0) + '/' + (st.total_peers || 0) + ' peers');
+      var h = API.health(st);
+      if (h === 'ok') parts.push(st.connected_seeders + ' 做种');
+      else if (h === 'noseed') parts.push('无做种者');
       if (st.torrent_size) parts.push('已缓存 ' + Math.min(100, 100 * (st.loaded_size || 0) / st.torrent_size).toFixed(0) + '%');
       $('osd-stat').textContent = parts.join(' · ');
+      lastSeeders = st.connected_seeders || 0;
+      checkStall(st);
     }, function () {});
+  }
+
+  /* ---- dead blocks (no seeder, player waiting on a piece nobody has) ---- */
+  function clearStall() { stallSince = 0; if (dead) { dead = null; if (active) setState(''); } }
+  function checkStall(st) {
+    if (!stallSince || dead || deadBusy || video.paused || video.ended) return;
+    if (Date.now() - stallSince < STALL_MS) return;
+    if ((st.download_speed || 0) >= STALL_SPEED || (st.connected_seeders || 0) > 0) return;
+    deadBusy = true;
+    findDead().then(function (d) {
+      deadBusy = false;
+      if (!active || !stallSince || !d) return;
+      dead = d;
+      setState('卡在没人有的数据块 #' + d.piece + (d.count > 1 ? '–' + (d.piece + d.count - 1) : '') + '（共 ' + d.total + ' 块，无做种者）\n按 ▶▶ 跳过约 ' + fmtSkip(d.seconds));
+      showOsd(true);
+    }, function () { deadBusy = false; });
+  }
+  /* /cache: Readers[].Reader is the piece the stream reader sits on; Pieces holds cached pieces only.
+   * First piece >= reader that is not cached = the dead block; count how many are missing in a row.
+   * Bytes -> seconds via the file's average bitrate (length / duration). */
+  function findDead() {
+    return API.cache(hash).then(function (c) {
+      if (!c || !c.PiecesLength || !c.Readers || !c.Readers.length) return null;
+      var pieces = c.Pieces || {}, best = null;
+      for (var i = 0; i < c.Readers.length; i++) {
+        var p = c.Readers[i].Reader;
+        while (p < c.PiecesCount && pieces[p]) p++;
+        if (p >= c.PiecesCount) continue;
+        var n = 0;
+        while (p + n < c.PiecesCount && !pieces[p + n]) n++;
+        if (!best || p < best.piece) best = { piece: p, count: n, total: c.PiecesCount };
+      }
+      if (!best) return null;
+      var f = current(), dur = video.duration;
+      var rate = f && isFinite(dur) && dur > 0 ? f.length / dur : 0;
+      best.seconds = rate ? Math.ceil(best.count * c.PiecesLength / rate) + 2 : 60;
+      return best;
+    });
+  }
+  function fmtSkip(sec) { return sec < 120 ? sec + ' 秒' : Math.round(sec / 60) + ' 分钟'; }
+  function skipDead() {
+    var d = dead;
+    if (!d) return;
+    var from = video.currentTime || 0;
+    try { for (var i = 0; i < video.buffered.length; i++) if (video.buffered.start(i) <= from + 0.5 && video.buffered.end(i) > from) { from = video.buffered.end(i); break; } } catch (e) { /* ignore */ }
+    var dur = video.duration, t = from + d.seconds;
+    if (isFinite(dur) && dur > 0 && t > dur - 2) { setState('死块在片尾，没有可跳的内容'); showOsd(false); return; }
+    dead = null; stallSince = 0;
+    try { video.currentTime = t; } catch (e2) { /* ignore */ }
+    setState('已跳过数据块 #' + d.piece + (d.count > 1 ? '–' + (d.piece + d.count - 1) : '') + '（' + UI.fmtTime(from) + ' → ' + UI.fmtTime(t) + '）');
+    startPlay();
+    updateTime();
+    showOsd(false);
   }
   function startStat() { stopStat(); pollStat(); statTimer = setInterval(pollStat, STAT_INTERVAL); }
   function stopStat() { if (statTimer) { clearInterval(statTimer); statTimer = null; } }
@@ -405,6 +469,7 @@
     index = files[i].id;
     pendingSeek = startTime || 0;
     lastErr = '';
+    stallSince = 0; dead = null;
     renderTitle();
     markCurrentEp();
     audioN = 0;
@@ -482,11 +547,12 @@
       updateTime();
       applyPreferredAudio();
     }, false);
-    video.addEventListener('playing', function () { setState(''); startSaveTimer(); }, false);
-    video.addEventListener('waiting', function () { setState('缓冲中…'); }, false);
+    video.addEventListener('playing', function () { clearStall(); setState(''); startSaveTimer(); }, false);
+    video.addEventListener('waiting', function () { if (!dead) setState('缓冲中…'); if (!stallSince) stallSince = Date.now(); }, false);
     video.addEventListener('pause', function () { if (active && !video.ended) { setState('已暂停'); showOsd(true); savePos(true); } }, false);
     video.addEventListener('play', function () { setState(''); showOsd(false); }, false);
-    video.addEventListener('timeupdate', function () { if (active) updateTime(); }, false);
+    video.addEventListener('seeking', function () { clearStall(); }, false);
+    video.addEventListener('timeupdate', function () { if (active) { updateTime(); if (stallSince && !video.paused && video.readyState >= 3) clearStall(); } }, false);
     video.addEventListener('ended', function () { if (active) nextFile(); }, false);
     video.addEventListener('error', function () {
       if (!active) return;
@@ -538,7 +604,7 @@
       case 404: openSubPanel(); return true;
       case 405: cycleAudio(); return true;
       case 413: video.pause(); savePos(true); App.back(); return true;
-      case 417: seekBy(60); return true;
+      case 417: if (dead) skipDead(); else seekBy(60); return true;
       case 412: seekBy(-60); return true;
       case 461: case 27: App.back(); return true;
     }
@@ -616,7 +682,9 @@
       subResults = null;
       subSaved = [];
       osdFocus = false;
+      stallSince = 0; dead = null;
     },
+    stall: function () { return { since: stallSince, dead: dead, seeders: lastSeeders, state: $('osd-state').textContent }; },
     subtitle: function () { var sl = Subs.slots(); return { current: sl[0], second: sl[1], offset: Subs.offset(), cues: Subs.count(0), cues2: Subs.count(1), panel: subPanel, items: subItems.length, text: $('subtitle').textContent, text2: $('subtitle2').textContent }; },
     openSubs: function () { openSubPanel(); },
     audioTracks: function () { var t = audioTracks(), out = []; if (t) for (var i = 0; i < t.length; i++) out.push({ language: t[i].language || '', label: t[i].label || '', enabled: !!t[i].enabled, name: trackName(t[i], i) }); return out; },

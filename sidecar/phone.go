@@ -22,6 +22,7 @@ h2{font-size:15px;color:#8f94a3;margin:26px 0 8px;font-weight:600}
 .t{background:#161925;border-radius:12px;padding:12px;margin-bottom:10px}
 .t .n{font-size:16px;color:#fff;word-break:break-all;line-height:1.35}
 .t .s{font-size:12px;color:#8f94a3;margin-top:4px}
+.t .s b{font-weight:600;margin-right:8px}.t .s b.ok{color:#22c55e}.t .s b.noseed{color:#fad778}.t .s b.nopeer{color:#ff8a80}
 .t .bar{height:4px;background:#2a2f40;border-radius:2px;margin-top:8px;overflow:hidden}
 .t .bar i{display:block;height:100%;background:#22c55e;width:0}
 .t .a{display:flex;gap:8px;margin-top:10px}
@@ -71,6 +72,9 @@ function normalize(s){
 }
 function pasteIn(){if(!navigator.clipboard||!navigator.clipboard.readText){msg('此浏览器不支持读剪贴板，请长按输入框粘贴',1);return}navigator.clipboard.readText().then(function(t){$('t').value=t;msg('')},function(){msg('读取剪贴板被拒绝，请长按输入框粘贴',1)})}
 function busy(b){$('bc').disabled=b;$('bw').disabled=b}
+/* swarm health: can it finish? (same rule as the TV app, api.js health()) */
+function health(t){if(!t||t.stat!==3||!t.torrent_size||(t.loaded_size||0)>=t.torrent_size)return'';if((t.connected_seeders||0)>0)return'ok';if((t.active_peers||0)>0||(t.total_peers||0)>0)return'noseed';return'nopeer'}
+var HEALTH={ok:'● 健康',noseed:'● 无做种者 · 可能下不完',nopeer:'● 没有 peer'};
 function videoFiles(st){var fs=(st&&st.file_stats)||[],out=[];for(var i=0;i<fs.length;i++)if(VIDEO.test(fs[i].path))out.push(fs[i]);out.sort(function(a,b){return b.length-a.length});return out}
 /* wait until TorrServer has the metadata (file list) for hash, up to ~60 s */
 function waitInfo(hash,n){return ts('/torrents',{action:'add',link:hash,save_to_db:true}).then(function(st){if(st&&st.file_stats&&st.file_stats.length)return st;if(n<=0)throw new Error('获取种子信息超时（没有 peer？）');msg('正在获取种子信息… '+n);return new Promise(function(r){setTimeout(r,1500)}).then(function(){return waitInfo(hash,n-1)})})}
@@ -131,6 +135,7 @@ function render(list){
     var sub=[t.stat_string||'',t.torrent_size?fmtSize(t.torrent_size):'',t.total_peers?t.total_peers+' peers':'',t.download_speed?fmtSize(t.download_speed)+'/s':''].filter(Boolean).join(' · ');
     d.innerHTML='<div class="n"></div><div class="s"></div><div class="bar"><i></i></div><div class="a"><button class="watch">观看</button><button class="cache">'+(vf.length?'文件 ('+vf.length+')':'文件')+'</button><button class="del">删除</button></div><div class="files"></div>';
     d.children[0].textContent=t.title||t.name||t.hash;d.children[1].textContent=sub;d.children[2].firstChild.style.width=pct.toFixed(1)+'%';
+    var hl=health(t);if(hl){var b=document.createElement('b');b.className=hl;b.textContent=HEALTH[hl]+(hl==='ok'?' · '+t.connected_seeders+' 做种':'');d.children[1].insertBefore(b,d.children[1].firstChild)}
     var a=d.children[3];
     a.children[0].onclick=function(){if(vf.length){playFile(t.hash,vf[0].id,t.title||'');return}msg('唤醒种子…');wake(t.hash).then(function(st){var v=videoFiles(st);if(!v.length)throw new Error('还没有文件信息，稍等再试');playFile(t.hash,v[0].id,st.title||'')}).catch(function(e){msg(e.message,1)})};
     a.children[0].disabled=t.stat===1;

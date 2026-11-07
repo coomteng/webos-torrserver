@@ -90,6 +90,23 @@ var API = (function () {
     });
   }
 
+  /* Cache map: { PiecesLength, PiecesCount, Pieces: { "<n>": {...} } (cached pieces only), Readers: [{Start, End, Reader}] }.
+   * Used to find the first piece ahead of the player that nobody is delivering (dead block). */
+  function cache(hash) { return request('POST', TS + '/cache', { action: 'get', hash: hash }, 8000); }
+
+  /* Swarm health from a list/get status. TorrServer omits zero-valued fields, hence the `|| 0`.
+   *   'ok'      at least one connected peer has the whole torrent -> it can finish
+   *   'noseed'  peers but none complete: everybody waits for the same missing pieces
+   *   'nopeer'  no peers at all
+   *   ''        finished, not started (stat 5), or still fetching metadata */
+  function health(st) {
+    if (!st || st.stat !== 3 || !st.torrent_size) return '';
+    if ((st.loaded_size || 0) >= st.torrent_size) return '';
+    if ((st.connected_seeders || 0) > 0) return 'ok';
+    if ((st.active_peers || 0) > 0 || (st.total_peers || 0) > 0) return 'noseed';
+    return 'nopeer';
+  }
+
   /* Viewed marks (TorrServer keeps them per hash+file index; timecode only if TrackTimecode is on). */
   function viewedList(hash) { return request('POST', TS + '/viewed', { action: 'list', hash: hash }, 8000); }
   function viewedSet(hash, index, timecode) { return request('POST', TS + '/viewed', { action: 'set', hash: hash, file_index: index, timecode: timecode || 0 }, 8000); }
@@ -134,6 +151,7 @@ var API = (function () {
 
   return {
     list: list, get: get, getFull: getFull, wake: wake, add: add, remove: remove, drop: drop, viewedList: viewedList, viewedSet: viewedSet,
+    cache: cache, health: health,
     streamUrl: streamUrl, echo: echo,
     config: config, remoteNew: remoteNew, remotePoll: remotePoll, remoteState: remoteState, remoteQr: remoteQr,
     subsList: subsList, subsSearch: subsSearch, subsFetch: subsFetch, subsDelete: subsDelete, subsText: subsText,

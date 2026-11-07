@@ -63,7 +63,7 @@ Developer Mode / `ares-setup-device` notes are the same as for moontv-webos.
 | --- | --- |
 | home | OK open · ↑↓ move · red ×2 delete from TorrServer · green refresh · blue big QR |
 | files | OK play (resumes if watched before) · green refresh |
-| player | OK play/pause · ←→ ±10 s (hold to repeat) · ↑↓ file strip · green subtitles · yellow next audio track · ⏪⏩ ±60 s · Back exit |
+| player | OK play/pause · ←→ ±10 s (hold to repeat) · ↑↓ file strip · green subtitles · yellow next audio track · ⏪⏩ ±60 s (⏩ skips the dead block when stalled) · Back exit |
 | subtitle panel | ↑↓ choose · OK apply · ←→ delay ∓0.5 s · green/Back close |
 
 Magic Remote: hover focuses, click activates, wheel scrolls / seeks, click on the seek bar seeks.
@@ -87,6 +87,15 @@ Magic Remote: hover focuses, click activates, wheel scrolls / seeks, click on th
   search plus uploading a local `.srt/.ass/.zip`; the TV loads it immediately if it is playing that file. The choice
   (or "off") and the delay are remembered per file in `localStorage` (`torr.sub.<hash>`). Needs `ASSRT_TOKEN`
   (free account at assrt.net; the quota is ~5 requests/min, the sidecar spaces calls 15 s apart and caches searches).
+- Swarm health: every torrent row (TV home and phone page) carries a tag derived from `connected_seeders` /
+  `active_peers` / `total_peers` of `list`: green **健康 · N 做种** (at least one complete peer, so it can finish),
+  yellow **无做种者 · 可能下不完** (peers but nobody has everything: all of them wait for the same missing pieces),
+  red **没有 peer**. Finished and idle torrents show nothing.
+- Dead blocks: when the player has been `waiting` for 12 s, download speed is ~0 and there is no seeder, the app asks
+  `POST /cache {action:get}` for the first piece ahead of the stream reader that is not cached (`Readers[].Reader`
+  vs `Pieces`), converts the missing run into seconds via the file's average bitrate, and shows
+  「卡在没人有的数据块 #30（共 101 块，无做种者）· 按 ▶▶ 跳过约 1 分钟」. ⏩ then seeks past it (otherwise ⏩ is +60 s).
+  One press per dead run; the next one gets the same prompt.
 - Resume positions live in the TV's `localStorage` (`torr.pos.<hash>`), since TorrServer's own
   `TrackTimecode` is off by default.
 
