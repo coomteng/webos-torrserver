@@ -56,13 +56,14 @@ type remoteState struct {
 }
 
 type remoteChannel struct {
-	id    string
-	mu    sync.Mutex
-	cond  *sync.Cond
-	seq   int
-	msgs  []remoteMsg
-	state *remoteState
-	t     time.Time
+	id     string
+	mu     sync.Mutex
+	cond   *sync.Cond
+	seq    int
+	msgs   []remoteMsg
+	state  *remoteState
+	t      time.Time
+	polled time.Time // last TV long-poll: the TV sits in /poll all the time, so this is its liveness
 }
 
 func newRemoteChannel(id string, now time.Time) *remoteChannel {
@@ -225,10 +226,26 @@ func (a *App) remoteGet(w http.ResponseWriter, r *http.Request, p string) {
 		send(w, r, 200, svg, "image/svg+xml", 86400)
 	case "poll":
 		since := atoi(r.URL.Query().Get("since"), 0)
-		sendJSON(w, r, 200, a.remote.poll(ch, since, remotePollWait))
-	case "state":
 		ch.mu.Lock()
-		st := ch.state
+		ch.polled = time.Now()
+		ch.mu.Unlock()
+		res := a.remote.poll(ch, since, remotePollWait)
+		ch.mu.Lock()
+		ch.polled = time.Now()
+		ch.mu.Unlock()
+		sendJSON(w, r, 200, res)
+	case "state":
+		// t = last sign of life: the later of the last state report and the last poll. A TV parked on
+		// the player reports nothing for hours but keeps polling; the phone shows 可能已关闭 after 120 s.
+		ch.mu.Lock()
+		var st *remoteState
+		if ch.state != nil {
+			c := *ch.state
+			if p := ch.polled.Unix(); !ch.polled.IsZero() && p > c.T {
+				c.T = p
+			}
+			st = &c
+		}
 		ch.mu.Unlock()
 		if st == nil {
 			sendJSON(w, r, 200, map[string]interface{}{})

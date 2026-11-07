@@ -344,3 +344,29 @@ func TestSubsDisabled(t *testing.T) {
 		t.Fatalf("expected 404 when disabled, got %d", r.StatusCode)
 	}
 }
+
+// A TV parked in the player reports state once and then only long-polls. The phone page judges
+// "TV online" by state.t, so polling must keep it fresh (it showed 可能已关闭 during playback).
+func TestStateFreshnessFollowsPolling(t *testing.T) {
+	app, srv := newTestApp(t)
+	postJSON(t, srv.URL+"/remote/new", map[string]string{"id": "live23"})
+	postJSON(t, srv.URL+"/remote/live23/state", map[string]interface{}{"view": "player", "title": "Dune"})
+	ch := app.remote.channel("live23", false)
+	ch.mu.Lock()
+	ch.state.T -= 600 // reported 10 minutes ago
+	ch.mu.Unlock()
+	_, m := getJSON(t, srv.URL+"/remote/live23/state")
+	if old := int64(m["t"].(float64)); time.Now().Unix()-old < 590 {
+		t.Fatalf("precondition: state should look 10 min old, t=%d", old)
+	}
+	// a poll that returns immediately (a message is pending)
+	postJSON(t, srv.URL+"/remote/live23/send", map[string]interface{}{"action": "added", "hash": strings.Repeat("a", 40)})
+	http.Get(srv.URL + "/remote/live23/poll?since=0")
+	_, m = getJSON(t, srv.URL+"/remote/live23/state")
+	if age := time.Now().Unix() - int64(m["t"].(float64)); age > 2 {
+		t.Fatalf("state.t not refreshed by polling: %d s old", age)
+	}
+	if m["view"] != "player" || m["title"] != "Dune" {
+		t.Fatalf("state content changed: %v", m)
+	}
+}
