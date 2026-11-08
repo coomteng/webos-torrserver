@@ -11,9 +11,9 @@ OLED55B8, webOS 4.4 / Chrome 53), plus a tiny Go sidecar so you can drive it fro
 [中文说明](README.zh-CN.md)
 
 ```
-phone  --scan QR-->  http://<host>:8791/r/<id>    (phone page, served by the sidecar)
+phone  --scan QR-->  http://<host>:8090/tr/r/<id> (phone page, served by torr-remote inside TorrServer; :8791/r/<id> standalone)
   |-- POST /torrents {add}  ----------------------> TorrServer :8090   (directly; CORS is open)
-  |-- POST /remote/<id>/send {play,hash,index} --> sidecar :8791 --long-poll--> TV app
+  |-- POST /tr/remote/<id>/send {play,hash,index} --> torr-remote --long-poll--> TV app
 TV app (ES5, com.ting.torr)
   |-- POST /torrents {list,get}  ----------------> TorrServer
   |-- <video src="http://<host>:8090/stream/<name>?link=<hash>&index=<n>&play">
