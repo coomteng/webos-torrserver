@@ -182,7 +182,8 @@ function renderSearch(list,q,via){
 function pickResult(x,watch){$('t').value=x.Magnet||x.Link;go(watch);window.scrollTo(0,0)}
 function wake(hash){return ts('/torrents',{action:'add',link:hash,save_to_db:true})}
 function playFile(hash,id,title){tell({action:'play',hash:hash,index:id,title:title}).then(function(){msg('已发送到电视 ✓')},function(e){msg(e.message,1)})}
-function del(hash,title){if(!confirm('从电视删除「'+title+'」？'))return;if(PC.items[hash])pcStop(hash).catch(function(){});ts('/torrents',{action:'rem',hash:hash}).then(function(){tell({action:'added',hash:hash}).catch(function(){});load()},function(e){msg(e.message,1)})}
+/* Stop the background cache first and wait for it: a preload still running when the torrent goes would be retried and re-add it. */
+function del(hash,title){if(!confirm('从电视删除「'+title+'」？'))return;(PC.items[hash]?pcStop(hash).catch(function(){}):Promise.resolve()).then(function(){return ts('/torrents',{action:'rem',hash:hash})}).then(function(){tell({action:'added',hash:hash}).catch(function(){});load()},function(e){msg(e.message,1)})}
 function toggle(hash){open[hash]=!open[hash];load()}
 /* ---- external subtitles (sidecar /subs/*) ---- */
 var SUBS=__SUBS__; /* {enabled, sources} */

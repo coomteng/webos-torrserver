@@ -292,6 +292,17 @@ func (p *Precache) run(ctx context.Context, hash string, index int) {
 			}
 			st, err = 0, errors.New(why)
 		}
+		// The preload also ends when the user removes the torrent. Retrying the
+		// /stream request then would silently re-add it (TorrServer adds any hash
+		// it does not know), which is exactly how a removed torrent kept coming
+		// back: forget the item instead.
+		if p.torrentGone(ctx, hash) {
+			p.forget(hash)
+			return
+		}
+		if ctx.Err() != nil {
+			return
+		}
 		msg := "TorrServer stat " + strconv.Itoa(st)
 		if err != nil {
 			msg = err.Error()
@@ -303,6 +314,32 @@ func (p *Precache) run(ctx context.Context, hash string, index int) {
 		case <-time.After(p.retryDelay):
 		}
 	}
+}
+
+// forget drops an item whose torrent no longer exists on TorrServer.
+func (p *Precache) forget(hash string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, ok := p.items[hash]; !ok {
+		return
+	}
+	delete(p.items, hash)
+	p.saveLocked()
+	log.Printf("precache: %s removed on TorrServer, forgotten", hash)
+}
+
+// torrentGone reports whether TorrServer answers 404 for hash ({"action":"get"}
+// looks in memory and in the DB, so 404 means removed, not merely unloaded).
+func (p *Precache) torrentGone(ctx context.Context, hash string) bool {
+	body := strings.NewReader(`{"action":"get","hash":"` + hash + `"}`)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, p.ts+"/torrents", body)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusNotFound
 }
 
 // finish records the outcome of a run attempt. Empty msg = done.

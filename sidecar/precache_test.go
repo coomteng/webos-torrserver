@@ -28,10 +28,11 @@ type fakeTS struct {
 	already  map[string]bool
 	down     bool
 	partial  map[string]bool // "get" reports the file as incomplete
+	removed  map[string]bool // torrent removed: /stream and "get" answer 404
 }
 
 func newFakeTS(t *testing.T) *fakeTS {
-	f := &fakeTS{waiters: map[string][]chan int{}, already: map[string]bool{}, partial: map[string]bool{}}
+	f := &fakeTS{waiters: map[string][]chan int{}, already: map[string]bool{}, partial: map[string]bool{}, removed: map[string]bool{}}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		if f.down {
@@ -53,6 +54,11 @@ func newFakeTS(t *testing.T) *fakeTS {
 			}
 			hash := q.Get("link")
 			f.mu.Lock()
+			if f.removed[hash] {
+				f.mu.Unlock()
+				http.Error(w, `{"error":"torrent was removed"}`, 404)
+				return
+			}
 			f.preloads = append(f.preloads, hash+"/"+q.Get("index"))
 			if f.already[hash] {
 				f.mu.Unlock()
@@ -84,6 +90,11 @@ func newFakeTS(t *testing.T) *fakeTS {
 				json.NewEncoder(w).Encode(map[string]bool{"stopped": len(ws) > 0})
 			case "get":
 				f.mu.Lock()
+				if f.removed[hash] {
+					f.mu.Unlock()
+					w.WriteHeader(404)
+					return
+				}
 				st := 3
 				if f.already[hash] {
 					st = 2
@@ -116,6 +127,20 @@ func newFakeTS(t *testing.T) *fakeTS {
 		}
 	})
 	return f
+}
+
+// remove is the user removing the torrent on TorrServer while it preloads: the
+// blocked /stream request returns (TorrServer: "Error preload: torrent closed",
+// stat 3) and from then on every request for the hash answers 404.
+func (f *fakeTS) remove(hash string) {
+	f.mu.Lock()
+	f.removed[hash] = true
+	ws := f.waiters[hash]
+	delete(f.waiters, hash)
+	f.mu.Unlock()
+	for _, ch := range ws {
+		ch <- 3
+	}
 }
 
 // finish ends the preload of hash the normal way (download complete).
@@ -288,6 +313,32 @@ func TestPrecacheIncompleteFileIsNotDoneAndRetries(t *testing.T) {
 	ts.mu.Unlock()
 	ts.finish(hA)
 	waitFor(t, "done once complete", func() bool { it := item(p, hA); return it != nil && it.Done && it.Error == "" })
+}
+
+// The user removes a torrent while it is being pre-cached: the item must vanish
+// from the list and the preload must NOT be retried (the retry would re-add the
+// torrent on TorrServer, which is how a removed torrent kept coming back).
+func TestPrecacheRemovedTorrentIsForgottenNotRetried(t *testing.T) {
+	ts, p := newPrecacheTest(t, t.TempDir())
+	p.add(hA, 1, "")
+	p.add(hB, 1, "")
+	waitFor(t, "two preloads", func() bool { return ts.count(&ts.preloads) == 2 })
+
+	ts.remove(hA)
+	waitFor(t, "A forgotten", func() bool { return item(p, hA) == nil })
+	time.Sleep(3 * p.retryDelay)
+	if n := ts.count(&ts.preloads); n != 2 {
+		t.Fatalf("removed torrent was re-requested: %d preloads", n)
+	}
+	if n := ts.count(&ts.stops); n != 0 {
+		t.Fatalf("preload_stop sent for a removed torrent: %d", n)
+	}
+	// B is untouched
+	if it := item(p, hB); it == nil || it.Done {
+		t.Fatalf("B: %+v", it)
+	}
+	ts.finish(hB)
+	waitFor(t, "B done", func() bool { it := item(p, hB); return it != nil && it.Done })
 }
 
 func TestPrecacheRetriesWhileTorrServerDown(t *testing.T) {

@@ -137,7 +137,9 @@
     var now = new Date().getTime();
     if (pendingDelete && pendingDelete.hash === hash && now - pendingDelete.t < 4000) {
       pendingDelete = null;
-      API.remove(hash).then(function () { UI.toast('已删除：' + (t.title || t.name || '')); refresh(false); }, function (err) { App.errorToast(err, '删除失败'); });
+      /* stop a background pre-cache first (ignore errors: sidecar down / nothing to stop), then remove */
+      API.precacheStop(hash).then(null, function () {}).then(function () { return API.remove(hash); })
+        .then(function () { UI.toast('已删除：' + (t.title || t.name || '')); refresh(false); }, function (err) { App.errorToast(err, '删除失败'); });
     } else {
       pendingDelete = { hash: hash, t: now };
       UI.toast('再按一次红键删除「' + (t.title || t.name || '') + '」');

@@ -37,6 +37,7 @@
   var stallSince = 0, dead = null, deadBusy = false, probe = null, errStall = false;
   var retried = false, loadStart = 0;
   var lastSeeders = -1;
+  var gone = false;        /* the torrent was removed on TorrServer while we were playing it */
 
   function $(id) { return UI.$(id); }
 
@@ -395,6 +396,21 @@
   function startSaveTimer() { stopSaveTimer(); saveTimer = setInterval(function () { if (!video.paused && !video.ended) savePos(false); }, SAVE_INTERVAL); }
   function stopSaveTimer() { if (saveTimer) { clearInterval(saveTimer); saveTimer = null; } }
 
+  /* The torrent was removed (phone page / another client) while playing. Stop everything that would
+   * re-request the stream: webOS re-opens the <video> URL by itself after the connection drops, and
+   * TorrServer would re-add the torrent from that request. */
+  function onGone() {
+    if (gone || !active) return;
+    gone = true;
+    stopStat(); stopSaveTimer(); stopSeekHold();
+    try { video.pause(); } catch (e) { /* ignore */ }
+    video.removeAttribute('src');
+    try { video.load(); } catch (e2) { /* ignore */ }
+    dead = null; stallSince = 0; errStall = false;
+    setState('种子已被删除\n按返回键退出');
+    showOsd(true);
+  }
+
   /* ---- TorrServer stat in the OSD (speed / peers / cache) ---- */
   function pollStat() {
     API.get(hash).then(function (st) {
@@ -409,7 +425,7 @@
       $('osd-stat').textContent = parts.join(' · ');
       lastSeeders = st.connected_seeders || 0;
       checkStall(st);
-    }, function () {});
+    }, function (err) { if (active && /HTTP 404/.test(err && err.message || '')) onGone(); });
   }
 
   /* ---- dead blocks (no seeder, player waiting on a piece nobody has) ---- */
@@ -491,7 +507,7 @@
 
   /* ---- playback ---- */
   function loadFile(i, startTime, isRetry) {
-    if (!files[i]) return;
+    if (!files[i] || gone) return;
     if (i !== fileIdx && video.currentTime > 3) savePos(true);
     fileIdx = i;
     index = files[i].id;
@@ -532,6 +548,7 @@
   }
 
   function seekBy(delta) {
+    if (gone) return;
     var dur = video.duration;
     var t = (video.currentTime || 0) + delta;
     if (t < 0) t = 0;
@@ -586,9 +603,11 @@
     video.addEventListener('timeupdate', function () { if (active) { updateTime(); if (stallSince && !video.paused && video.readyState >= 3) clearStall(); } }, false);
     video.addEventListener('ended', function () { if (active) nextFile(); }, false);
     video.addEventListener('error', function () {
-      if (!active) return;
+      if (!active || gone) return;
       var code = video.error && video.error.code;
       var t = video.currentTime || 0;
+      /* removed under us? then none of the retries below may run (each would reopen the stream URL) */
+      API.get(hash).then(null, function (err) { if (active && /HTTP 404/.test(err && err.message || '')) onGone(); });
       /* cold start: TorrServer still fetching metadata/first piece, webOS times out with error 4. One retry. */
       if (code === 4 && t < 1 && !retried) {
         retried = true;
@@ -678,6 +697,7 @@
         App.Remote.on(function (ev) { if (ev && ev.type === 'sub') onRemoteSub(ev); });
       }
       active = true;
+      gone = false;
       hash = params.hash;
       title = params.title || '';
       files = [];

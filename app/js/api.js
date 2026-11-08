@@ -134,6 +134,10 @@ var API = (function () {
     });
   }
 
+  /* Background pre-cache (sidecar /precache, see sidecar/precache.go). Stop before removing a torrent:
+   * a preload still running when the torrent goes is retried and silently re-adds it. */
+  function precacheStop(hash) { return request('POST', SIDECAR + '/precache/stop', { hash: hash }, 8000); }
+
   /* ---- external subtitles (sidecar /subs/*, see sidecar/subs_handlers.go) ---- */
   function subsList(hash, index) { return request('GET', SIDECAR + '/subs/list?hash=' + hash + '&index=' + index, null, 8000); }
   function subsSearch(file, q) {
@@ -151,6 +155,7 @@ var API = (function () {
 
   return {
     list: list, get: get, getFull: getFull, wake: wake, add: add, remove: remove, drop: drop, viewedList: viewedList, viewedSet: viewedSet,
+    precacheStop: precacheStop,
     cache: cache, health: health,
     streamUrl: streamUrl, echo: echo,
     config: config, remoteNew: remoteNew, remotePoll: remotePoll, remoteState: remoteState, remoteQr: remoteQr,
