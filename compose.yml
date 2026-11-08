@@ -1,32 +1,22 @@
-# TorrServer + torr-remote sidecar, as deployed on the LAN box (Portainer stack "torrserver").
-# Set TORR_PUBLIC to the address the TV and phones use to reach this host.
+# TorrServer with torr-remote compiled in, as deployed on the LAN box (Portainer stack "torrserver").
+# The fork image (github.com/coomteng/TorrServer) serves TorrServer and, under /tr, the TV app
+# (/tr/tv/), the phone page (/tr/r/<id>), external subtitles and background pre-cache: one
+# container, one port. Build the TV app with SIDECAR_BASE=http://<host>:8090/tr.
+# To run stock TorrServer plus the standalone sidecar instead, see the "torr-remote" service in
+# git history before 2026-11-08 (image ghcr.io/coomteng/webos-torrserver, port 8791).
 services:
   torrserver:
-    image: ghcr.io/coomteng/torrserver:master   # fork with StopSeedingWhenCached (github.com/coomteng/TorrServer)
+    image: ghcr.io/coomteng/torrserver:master
     container_name: torrserver
     restart: unless-stopped
-    network_mode: host              # BT peers + DLNA/UPnP work best without NAT; web UI/API on :8090
+    network_mode: host              # BT peers + DLNA/UPnP work best without NAT; web UI/API/TV app on :8090
     environment:
       TS_PORT: "8090"
       TS_DONTKILL: "1"
-    volumes:
-      - ${TORR_CONFIG:-./data/config}:/opt/ts/config
-      - ${TORR_CACHE:-./data/cache}:/opt/ts/torrents   # disk cache (settings: UseDisk + TorrentsSavePath=/opt/ts/torrents)
-    mem_limit: ${TORR_MEM:-768m}
-
-  torr-remote:
-    image: ghcr.io/coomteng/webos-torrserver:${TAG:-latest}
-    container_name: torr-remote
-    restart: unless-stopped
-    ports:
-      - "8791:8791"
-    environment:
-      TORR_SERVER: ${TORR_PUBLIC:-http://192.168.0.9}:8090   # what the TV/phone will call
       TZ: ${TZ:-Europe/Zurich}
-      TORR_SUBS_DIR: /data/subs                                # external subtitles (converted to VTT)
-      TORR_DATA_DIR: /data                                     # precache.json (background pre-cache list)
       ASSRT_TOKEN: ${ASSRT_TOKEN:-}                            # assrt.net token enables subtitle search
     volumes:
-      - ${TORR_DATA:-./data/torr-remote}:/data
-    depends_on:
-      - torrserver
+      - ${TORR_CONFIG:-./data/config}:/opt/ts/config
+      - ${TORR_DATA:-./data/torr-remote}:/opt/ts/config/torr-remote   # subs/ + precache.json
+      - ${TORR_CACHE:-./data/cache}:/opt/ts/torrents           # disk cache (settings: UseDisk + TorrentsSavePath=/opt/ts/torrents)
+    mem_limit: ${TORR_MEM:-768m}

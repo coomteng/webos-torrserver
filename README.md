@@ -38,7 +38,7 @@ serves the static pages. TorrServer stays stock.
 ## Run the server side
 
 ```sh
-TORR_PUBLIC=http://192.168.0.9 ASSRT_TOKEN=<your assrt.net token> docker compose up -d
+ASSRT_TOKEN=<your assrt.net token> docker compose up -d
 ```
 
 Then open `http://<host>:8090` once and set TorrServer to cache on disk (Settings → *Use disk*,
@@ -46,18 +46,21 @@ path `/opt/ts/torrents`), or POST the settings as the stack on the reference box
 `CacheSize` 256 MiB, `UseDisk` true, `RemoveCacheOnDrop` true, `PreloadCache` 10, `ReaderReadAHead` 95,
 `ResponsiveMode` true. TorrServer runs without auth here — keep it on the LAN.
 
-`http://<host>:8791/` is the simulator, `http://<host>:8791/tv/` the app itself in a browser.
+With the fork image in `compose.yml`, `http://<host>:8090/tr/sim` is the simulator and
+`http://<host>:8090/tr/tv/` the app itself in a browser (standalone sidecar: `:8791/` and `:8791/tv/`).
 
-### Or run it inside TorrServer
+### How the two fit together
 
 `sidecar/` is also a Go library (`package torrremote`, import path
 `github.com/coomteng/webos-torrserver/sidecar`): `torrremote.New(cfg)` + `app.Handler()` is an
 `http.Handler` that can be mounted under a prefix (`cfg.BasePath`). The TorrServer fork
 [coomteng/TorrServer](https://github.com/coomteng/TorrServer) does exactly that under `/tr`, so one
 container on `:8090` serves TorrServer, the TV app (`/tr/tv/`), the phone page (`/tr/r/<id>`),
-subtitles and pre-caching; no second port, no CORS, no address to configure. The standalone binary
-(`sidecar/cmd/torr-remote`) and this image keep working unchanged for anyone running stock
-TorrServer. Build the TV app with `SIDECAR_BASE=http://<host>:8090/tr` in that case.
+subtitles and pre-caching; no second port, no CORS, no address to configure. That is the deployed
+setup since 2026-11-08 (`compose.yml`, TV app built with `SIDECAR_BASE=http://<host>:8090/tr`).
+The standalone binary (`sidecar/cmd/torr-remote`) and the `ghcr.io/coomteng/webos-torrserver`
+image keep working unchanged for anyone running stock TorrServer on `:8791`; the fork's Docker
+build also takes the TV app files from that image.
 
 ## Install on the TV
 
