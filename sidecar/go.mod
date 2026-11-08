@@ -1,4 +1,4 @@
-module torr-remote
+module github.com/coomteng/webos-torrserver/sidecar
 
 go 1.24.0
 

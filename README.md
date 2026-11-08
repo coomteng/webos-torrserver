@@ -48,6 +48,17 @@ path `/opt/ts/torrents`), or POST the settings as the stack on the reference box
 
 `http://<host>:8791/` is the simulator, `http://<host>:8791/tv/` the app itself in a browser.
 
+### Or run it inside TorrServer
+
+`sidecar/` is also a Go library (`package torrremote`, import path
+`github.com/coomteng/webos-torrserver/sidecar`): `torrremote.New(cfg)` + `app.Handler()` is an
+`http.Handler` that can be mounted under a prefix (`cfg.BasePath`). The TorrServer fork
+[coomteng/TorrServer](https://github.com/coomteng/TorrServer) does exactly that under `/tr`, so one
+container on `:8090` serves TorrServer, the TV app (`/tr/tv/`), the phone page (`/tr/r/<id>`),
+subtitles and pre-caching; no second port, no CORS, no address to configure. The standalone binary
+(`sidecar/cmd/torr-remote`) and this image keep working unchanged for anyone running stock
+TorrServer. Build the TV app with `SIDECAR_BASE=http://<host>:8090/tr` in that case.
+
 ## Install on the TV
 
 ```sh

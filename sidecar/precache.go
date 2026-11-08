@@ -1,4 +1,4 @@
-package main
+package torrremote
 
 // Background pre-caching ("prefetch") of whole files, switchable on and off.
 //
@@ -63,8 +63,12 @@ type Precache struct {
 }
 
 func newPrecache(cfg Config) *Precache {
+	ts := cfg.InternalTorrServer
+	if ts == "" {
+		ts = cfg.TorrServer
+	}
 	p := &Precache{
-		ts:         cfg.TorrServer,
+		ts:         ts,
 		enabled:    true,
 		items:      map[string]*precacheItem{},
 		running:    map[string]context.CancelFunc{},

@@ -109,7 +109,7 @@ async function waitFor(page, pred, ms) {
 
   // sidecar
   const bin = path.join(TMP, 'torr-remote');
-  execFileSync(GOBIN, ['build', '-o', bin, '.'], { cwd: path.join(ROOT, 'sidecar'), env: Object.assign({}, process.env, { TMPDIR: process.env.TMPDIR || path.join(os.homedir(), '.cache/gotmp'), CGO_ENABLED: '0' }), stdio: 'inherit' });
+  execFileSync(GOBIN, ['build', '-o', bin, './cmd/torr-remote'], { cwd: path.join(ROOT, 'sidecar'), env: Object.assign({}, process.env, { TMPDIR: process.env.TMPDIR || path.join(os.homedir(), '.cache/gotmp'), CGO_ENABLED: '0' }), stdio: 'inherit' });
   const PORT = 18791 + Math.floor(Math.random() * 1000);
   const side = spawn(bin, [], { env: Object.assign({}, process.env, { TORR_SERVER: base, TORR_PORT: String(PORT), TORR_APP_DIR: path.join(ROOT, 'app'), TORR_SUBS_DIR: path.join(TMP, 'subs'), ASSRT_TOKEN: 'tok', ASSRT_BASE: base + '/v1', ASSRT_SPACING_MS: '50' }), stdio: ['ignore', 'pipe', 'pipe'] });
   side.stdout.on('data', (d) => process.stdout.write('  [sidecar] ' + d));

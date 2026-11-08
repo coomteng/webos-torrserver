@@ -1,4 +1,4 @@
-package main
+package torrremote
 
 import (
 	"context"
@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"torr-remote/subs"
+	"github.com/coomteng/webos-torrserver/sidecar/subs"
 )
 
 // Subtitle endpoints. The TV never touches subtitle sites: the sidecar searches, downloads,
@@ -67,8 +67,8 @@ func (s *Subs) configInfo() map[string]interface{} {
 	return map[string]interface{}{"enabled": s.enabled(), "sources": names}
 }
 
-func withURL(rec subs.Saved, hash string, index int) subs.Saved {
-	rec.URL = fmt.Sprintf("/subs/%s/%d/%d.vtt", hash, index, rec.N)
+func (a *App) withURL(rec subs.Saved, hash string, index int) subs.Saved {
+	rec.URL = fmt.Sprintf("%s/subs/%s/%d/%d.vtt", a.cfg.BasePath, hash, index, rec.N)
 	return rec
 }
 
@@ -118,7 +118,7 @@ func (a *App) subsGet(w http.ResponseWriter, r *http.Request, p string) {
 		}
 		out := []subs.Saved{}
 		for _, rec := range list {
-			out = append(out, withURL(rec, hash, index))
+			out = append(out, a.withURL(rec, hash, index))
 		}
 		sendJSON(w, r, 200, map[string]interface{}{"subs": out})
 	case strings.HasSuffix(p, ".vtt"):
@@ -160,7 +160,7 @@ func (a *App) subsPost(w http.ResponseWriter, r *http.Request, p string) {
 			return
 		}
 		log.Printf("subs: uploaded %q for %s/%d -> #%d (%d cues)", name, hash, index, rec.N, rec.Cues)
-		sendJSON(w, r, 200, map[string]interface{}{"sub": withURL(rec, hash, index)})
+		sendJSON(w, r, 200, map[string]interface{}{"sub": a.withURL(rec, hash, index)})
 		return
 	}
 	body, err := readJSONBody(r)
@@ -219,7 +219,7 @@ func (a *App) subsPost(w http.ResponseWriter, r *http.Request, p string) {
 			return
 		}
 		log.Printf("subs: fetched %s#%s %q for %s/%d -> #%d (%d cues)", src.Name(), id, chosen.Name, hash, index, rec.N, rec.Cues)
-		sendJSON(w, r, 200, map[string]interface{}{"sub": withURL(rec, hash, index), "files": len(files)})
+		sendJSON(w, r, 200, map[string]interface{}{"sub": a.withURL(rec, hash, index), "files": len(files)})
 	case "/subs/delete":
 		if err := a.subs.store.Delete(hash, index, atoi(str(body["n"]), 0)); err != nil {
 			sendError(w, r, 404, "not found")

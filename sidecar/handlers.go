@@ -1,4 +1,4 @@
-package main
+package torrremote
 
 import (
 	"bytes"
@@ -10,6 +10,34 @@ import (
 	"strings"
 )
 
+// Config configures one App. Every field is optional except TorrServer.
+type Config struct {
+	// TorrServer is the URL the TV app and the phone page use to reach TorrServer,
+	// e.g. http://192.168.0.9:8090. Empty means "same origin as this page", which is
+	// right when the App is mounted inside TorrServer itself.
+	TorrServer string
+	// InternalTorrServer is what the sidecar's own goroutines (precache) call.
+	// Defaults to TorrServer; when embedded it is TorrServer's loopback listener.
+	InternalTorrServer string
+	// BasePath is the URL prefix the App is mounted under ("" standalone, "/tr"
+	// inside TorrServer). It is stripped before routing and prepended to every
+	// URL the App hands out (phone page link, subtitle .vtt URLs).
+	BasePath string
+
+	Listen     string // standalone only
+	Port       string // standalone only; also the fallback for Host-less requests
+	AppDir     string // TV app files served under /tv/; empty disables
+	SimFile    string // browser simulator html served at /sim; empty disables
+	Verbose    bool
+	SubsDir    string // where converted subtitles live; empty disables /subs/*
+	AssrtToken string // assrt.net API token (free account); empty disables search
+	Wikidata   string // Wikidata API for Chinese -> English titles (tests point it at a fake)
+	DataDir    string // sidecar state (precache.json); empty = memory only
+}
+
+// App is the torr-remote service: phone -> TV channel, phone page, TV app hosting,
+// title lookup, external subtitles and background pre-caching. Use New, mount
+// Handler, Close on shutdown.
 type App struct {
 	cfg      Config
 	remote   *Remote
@@ -18,7 +46,17 @@ type App struct {
 	precache *Precache
 }
 
-func newApp(cfg Config) *App {
+// New builds the App and resumes unfinished pre-cache items.
+func New(cfg Config) *App {
+	cfg.TorrServer = strings.TrimRight(cfg.TorrServer, "/")
+	cfg.InternalTorrServer = strings.TrimRight(cfg.InternalTorrServer, "/")
+	if cfg.InternalTorrServer == "" {
+		cfg.InternalTorrServer = cfg.TorrServer
+	}
+	cfg.BasePath = strings.TrimRight(cfg.BasePath, "/")
+	if cfg.BasePath != "" && !strings.HasPrefix(cfg.BasePath, "/") {
+		cfg.BasePath = "/" + cfg.BasePath
+	}
 	t := newTitles()
 	if cfg.Wikidata != "" {
 		t.Base = cfg.Wikidata
@@ -27,6 +65,15 @@ func newApp(cfg Config) *App {
 	a.precache.resume()
 	return a
 }
+
+// newApp is the test-side shorthand.
+func newApp(cfg Config) *App { return New(cfg) }
+
+// Close stops the background goroutines (pre-cache runs) and waits for them.
+func (a *App) Close() { a.precache.close() }
+
+// SubsSources lists the enabled subtitle sources (for the startup log).
+func (a *App) SubsSources() []string { return a.subs.sourceNames() }
 
 // ---------------------------------------------------------------- response helpers
 
@@ -120,12 +167,21 @@ func truncRunes(s string, n int) string {
 
 // ---------------------------------------------------------------- routing
 
-func (a *App) routes() http.Handler {
+// Handler serves the whole App. Requests outside BasePath get 404.
+func (a *App) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if a.cfg.Verbose {
 			log.Printf("%s %s", r.Method, r.URL.RequestURI())
 		}
-		p := strings.TrimRight(r.URL.Path, "/")
+		p := r.URL.Path
+		if a.cfg.BasePath != "" {
+			if p != a.cfg.BasePath && !strings.HasPrefix(p, a.cfg.BasePath+"/") {
+				sendError(w, r, 404, "not found")
+				return
+			}
+			p = strings.TrimPrefix(p, a.cfg.BasePath)
+		}
+		p = strings.TrimRight(p, "/")
 		if p == "" {
 			p = "/"
 		}

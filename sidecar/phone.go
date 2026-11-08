@@ -1,4 +1,4 @@
-package main
+package torrremote
 
 // phonePage is served at /r/<id>. It talks to TorrServer directly (open CORS) for add / list /
 // remove and only uses the sidecar channel to tell the TV what to play.
@@ -78,14 +78,14 @@ h2{font-size:15px;color:#8f94a3;margin:26px 0 8px;font-weight:600}
 <div id="tc"></div><div id="sm"></div><div id="sr"></div></details>
 <div class="hdr"><h2>电视上的种子</h2><button id="pcsw" onclick="pcToggleAll()" title="后台缓存总开关">后台缓存 …</button></div><div id="list"><div class="empty">加载中…</div></div>
 <script>
-var ID=__ID__, TS=__TS__;
+var ID=__ID__, BASE=__BASE__, TS=__TS__||location.origin;
 var VIDEO=/\.(mkv|mp4|m4v|avi|mov|ts|m2ts|mpg|mpeg|webm|wmv|flv|vob|iso|3gp)$/i;
 var $=function(i){return document.getElementById(i)};
 var open={}; /* hash -> files expanded */
 function msg(s,err){var m=$('msg');m.textContent=s||'';m.className=err?'err':''}
 function fmtSize(b){if(!b)return'';var u=['B','KB','MB','GB','TB'],i=0;while(b>=1024&&i<4){b/=1024;i++}return(i>1?b.toFixed(1):Math.round(b))+' '+u[i]}
 function ts(path,body){return fetch(TS+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){if(!r.ok)return r.text().then(function(t){throw new Error('TorrServer '+r.status+' '+t.slice(0,120))});return r.text().then(function(t){return t?JSON.parse(t):null})})}
-function tell(body){return fetch('/remote/'+ID+'/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){if(r.status===404)throw new Error('电视未连接：请在电视上重新打开应用');if(!r.ok)throw new Error('通知电视失败 '+r.status);return r.json()})}
+function tell(body){return fetch(BASE+'/remote/'+ID+'/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){if(r.status===404)throw new Error('电视未连接：请在电视上重新打开应用');if(!r.ok)throw new Error('通知电视失败 '+r.status);return r.json()})}
 function normalize(s){
   s=(s||'').trim();
   if(!s)return'';
@@ -138,7 +138,7 @@ function tsSearch(){
   $('ts-q').blur();$('tc').innerHTML='';
   if(!HAN.test(q)){runSearch(q,q);return}
   var my=++searchSeq;$('ts-b').disabled=true;$('sr').innerHTML='';smsg('正在查「'+q+'」的英文片名…');
-  fetch('/title?q='+encodeURIComponent(q)).then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j&&j.error||('HTTP '+r.status));return j})}).then(function(j){
+  fetch(BASE+'/title?q='+encodeURIComponent(q)).then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j&&j.error||('HTTP '+r.status));return j})}).then(function(j){
     if(my!==searchSeq)return;
     var c=(j&&j.candidates)||[];
     if(!c.length){$('ts-b').disabled=false;smsg('没查到「'+q+'」对应的英文片名。搜索站只有英文资源，请直接输入英文名（如 The Wandering Earth）',1);return}
@@ -190,7 +190,7 @@ var SUBS=__SUBS__; /* {enabled, sources} */
 var subOpen={}, subState={}, loadForced=false; /* key hash:id -> {saved,results,msg,err,q,busy} */
 function skey(h,id){return h+':'+id}
 function sget(h,id){var k=skey(h,id);if(!subState[k])subState[k]={saved:[],results:null,msg:'',err:false,q:'',busy:false};return subState[k]}
-function sapi(path,opt){return fetch(path,opt).then(function(r){return r.text().then(function(t){var j=null;try{j=t?JSON.parse(t):null}catch(e){}if(!r.ok)throw new Error((j&&j.error)||('HTTP '+r.status));return j})})}
+function sapi(path,opt){return fetch(BASE+path,opt).then(function(r){return r.text().then(function(t){var j=null;try{j=t?JSON.parse(t):null}catch(e){}if(!r.ok)throw new Error((j&&j.error)||('HTTP '+r.status));return j})})}
 function subToggle(h,id,fname){var k=skey(h,id);subOpen[k]=!subOpen[k];if(subOpen[k]){var st=sget(h,id);if(!st.q)st.q=fname;sapi('/subs/list?hash='+h+'&index='+id).then(function(r){st.saved=(r&&r.subs)||[];load()},function(e){st.msg=e.message;st.err=true;load()})}load()}
 function subSearch(h,id){var st=sget(h,id);var inp=document.getElementById('sq-'+skey(h,id));var q=(inp&&inp.value)||st.q;st.q=q;if(inp)inp.blur();st.busy=true;st.err=false;st.msg='正在搜索…（字幕站限速，可能要等十几秒）';loadForced=true;load();
   sapi('/subs/search?q='+encodeURIComponent(q)).then(function(r){st.busy=false;st.results=(r&&r.results)||[];st.msg=st.results.length?'搜索词：'+(r.query||q):'没有找到，换个关键词试试（片名 + 年份 / S01E02）';load()},function(e){st.busy=false;st.msg='搜索失败：'+e.message;st.err=true;load()})}
@@ -212,7 +212,7 @@ function subPanel(h,id,fname,title){var st=sget(h,id),k=skey(h,id);var d=documen
   return d}
 /* ---- background pre-caching (sidecar /precache; TorrServer preload + fork preload_stop) ---- */
 var PC={enabled:true,items:{}}; /* hash -> {index,title,done,error} */
-function pcApi(path,body){return fetch(path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}).then(function(r){return r.text().then(function(t){var j=null;try{j=t?JSON.parse(t):null}catch(e){}if(!r.ok)throw new Error((j&&j.error)||('HTTP '+r.status));return j})})}
+function pcApi(path,body){return fetch(BASE+path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}).then(function(r){return r.text().then(function(t){var j=null;try{j=t?JSON.parse(t):null}catch(e){}if(!r.ok)throw new Error((j&&j.error)||('HTTP '+r.status));return j})})}
 function pcLoad(){return pcApi('/precache').then(function(f){PC.enabled=!!(f&&f.enabled);PC.items={};((f&&f.items)||[]).forEach(function(it){PC.items[it.hash]=it});pcSwitch()},function(){})}
 function pcSwitch(){var b=$('pcsw');b.className=PC.enabled?'on':'';b.textContent=PC.enabled?'后台缓存：开':'后台缓存：关'}
 function pcToggleAll(){var on=!PC.enabled;if(!on&&!confirm('关闭后台缓存？正在缓存的种子会停止（已下载部分保留，再打开时继续）'))return;$('pcsw').disabled=true;pcApi('/precache/enabled',{enabled:on}).then(function(){PC.enabled=on;pcSwitch();msg(on?'后台缓存已打开，未完成的继续下载':'后台缓存已关闭')},function(e){msg(e.message,1)}).then(function(){$('pcsw').disabled=false;pcLoad().then(load)})}
@@ -256,7 +256,7 @@ function render(list){
   });
 }
 function load(){var ae=document.activeElement;if(ae&&ae.tagName==='INPUT'&&ae.id&&ae.id.indexOf('sq-')===0){var k=ae.id.slice(3);if(subState[k])subState[k].q=ae.value;if(!loadForced){return}}loadForced=false;pcLoad().then(function(){return ts('/torrents',{action:'list'})}).then(render,function(e){$('list').innerHTML='<div class="empty">连不上 TorrServer（'+TS+'）</div>'})}
-function st(){fetch('/remote/'+ID+'/state').then(function(r){return r.ok?r.json():null}).then(function(s){
+function st(){fetch(BASE+'/remote/'+ID+'/state').then(function(r){return r.ok?r.json():null}).then(function(s){
   var c=$('ctx');if(!s||!s.t){c.textContent='电视应用尚未报告状态（请在电视上打开应用）';return}
   var age=Math.round(Date.now()/1000-s.t);
   c.textContent=(age>120?'电视应用可能已关闭 · ':'电视在线 · ')+(s.view==='player'?'正在播放：'+(s.title||''):s.view==='files'?'正在看文件列表：'+(s.title||''):'在首页');

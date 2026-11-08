@@ -1,4 +1,4 @@
-package main
+package torrremote
 
 import (
 	"bytes"
@@ -16,7 +16,7 @@ import (
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
 
-	"torr-remote/subs"
+	"github.com/coomteng/webos-torrserver/sidecar/subs"
 )
 
 func newTestApp(t *testing.T) (*App, *httptest.Server) {
@@ -25,7 +25,7 @@ func newTestApp(t *testing.T) (*App, *httptest.Server) {
 	os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>tv</html>"), 0o644)
 	os.WriteFile(filepath.Join(dir, "a.js"), []byte("var a=1;"), 0o644)
 	app := newApp(Config{TorrServer: "http://ts.example:8090", Port: "8791", AppDir: dir})
-	srv := httptest.NewServer(app.routes())
+	srv := httptest.NewServer(app.Handler())
 	t.Cleanup(srv.Close)
 	return app, srv
 }
@@ -135,7 +135,7 @@ func TestQRAndPhonePage(t *testing.T) {
 	b.Reset()
 	b.ReadFrom(r.Body)
 	s := b.String()
-	if r.StatusCode != 200 || !strings.Contains(s, `var ID="qrtest", TS="http://ts.example:8090"`) {
+	if r.StatusCode != 200 || !strings.Contains(s, `var ID="qrtest", BASE="", TS="http://ts.example:8090"||location.origin`) {
 		t.Fatalf("phone page: %d %q", r.StatusCode, s[:200])
 	}
 	if !strings.Contains(s, `id="ts-q"`) || !strings.Contains(s, "/torznab/search/?query=") {
@@ -202,7 +202,7 @@ func newSubsTestApp(t *testing.T) (*App, *httptest.Server, *httptest.Server) {
 	a := app.subs.sources["assrt"].(*subs.ASSRT)
 	a.Base = fake.URL + "/v1"
 	a.Spacing = time.Millisecond
-	srv := httptest.NewServer(app.routes())
+	srv := httptest.NewServer(app.Handler())
 	t.Cleanup(srv.Close)
 	return app, srv, fake
 }

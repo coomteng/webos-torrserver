@@ -1,4 +1,4 @@
-package main
+package torrremote
 
 import (
 	"crypto/rand"
@@ -201,7 +201,7 @@ func hostOf(r *http.Request, a *App) string {
 }
 
 func (a *App) phoneURL(r *http.Request, id string) string {
-	return fmt.Sprintf("http://%s/r/%s", hostOf(r, a), id)
+	return fmt.Sprintf("http://%s%s/r/%s", hostOf(r, a), a.cfg.BasePath, id)
 }
 
 // remoteGet handles GET /remote/<id>/{qr.svg,poll,state}.
@@ -320,8 +320,10 @@ func (a *App) servePhonePage(w http.ResponseWriter, r *http.Request, id string) 
 	}
 	idJSON, _ := json.Marshal(id)
 	tsJSON, _ := json.Marshal(a.cfg.TorrServer)
+	baseJSON, _ := json.Marshal(a.cfg.BasePath)
 	page := strings.Replace(phonePage, "__ID__", string(idJSON), 1)
 	page = strings.Replace(page, "__TS__", string(tsJSON), 1)
+	page = strings.Replace(page, "__BASE__", string(baseJSON), 1)
 	subsJSON := marshal(a.subs.configInfo())
 	page = strings.Replace(page, "__SUBS__", string(subsJSON), 1)
 	send(w, r, 200, []byte(page), "text/html; charset=utf-8", 0)

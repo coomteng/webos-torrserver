@@ -14,6 +14,9 @@
 //     keep it on disk per torrent file (see subs_handlers.go). Optional (TORR_SUBS_DIR).
 //   - /precache: background pre-caching of whole files through TorrServer's preload, with a
 //     global on/off switch; the list survives restarts in TORR_DATA_DIR (see precache.go).
+//
+// This is the standalone binary. The same service is a library (package torrremote,
+// one directory up) that the TorrServer fork mounts in-process under /tr.
 package main
 
 import (
@@ -25,29 +28,18 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	torrremote "github.com/coomteng/webos-torrserver/sidecar"
 )
 
-type Config struct {
-	TorrServer string // public URL of TorrServer as seen from the TV/phone, e.g. http://192.168.0.9:8090
-	Listen     string
-	Port       string
-	AppDir     string
-	SimFile    string
-	Verbose    bool
-	SubsDir    string // where converted subtitles live; empty disables /subs/*
-	AssrtToken string // assrt.net API token (free account); empty disables search
-	Wikidata   string // Wikidata API for Chinese -> English titles (tests point it at a fake)
-	DataDir    string // sidecar state (precache.json); empty = memory only
-}
-
-func loadConfig() Config {
+func loadConfig() torrremote.Config {
 	get := func(k, d string) string {
 		if v := os.Getenv(k); v != "" {
 			return v
 		}
 		return d
 	}
-	return Config{
+	return torrremote.Config{
 		TorrServer: strings.TrimRight(get("TORR_SERVER", "http://127.0.0.1:8090"), "/"),
 		Listen:     get("TORR_LISTEN", "0.0.0.0"),
 		Port:       get("TORR_PORT", "8791"),
@@ -65,16 +57,16 @@ func main() {
 	log.SetFlags(0)
 	log.SetPrefix("[torr-remote] ")
 	cfg := loadConfig()
-	app := newApp(cfg)
+	app := torrremote.New(cfg)
 	addr := cfg.Listen + ":" + cfg.Port
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           app.routes(),
+		Handler:           app.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		// no WriteTimeout: /remote/<id>/poll holds connections for up to 25 s
 		IdleTimeout: 120 * time.Second,
 	}
-	log.Printf("listening on %s, TorrServer at %s, subtitles: dir=%q sources=%v", addr, cfg.TorrServer, cfg.SubsDir, app.subs.sourceNames())
+	log.Printf("listening on %s, TorrServer at %s, subtitles: dir=%q sources=%v", addr, cfg.TorrServer, cfg.SubsDir, app.SubsSources())
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatal(err)
@@ -86,4 +78,5 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	srv.Shutdown(ctx)
+	app.Close()
 }

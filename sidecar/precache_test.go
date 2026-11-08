@@ -1,4 +1,4 @@
-package main
+package torrremote
 
 import (
 	"encoding/json"
@@ -360,7 +360,7 @@ func TestPrecacheHTTP(t *testing.T) {
 	ts := newFakeTS(t)
 	app := newApp(Config{TorrServer: ts.srv.URL, Port: "8791", AppDir: t.TempDir(), DataDir: t.TempDir()})
 	t.Cleanup(app.precache.close)
-	srv := httptest.NewServer(app.routes())
+	srv := httptest.NewServer(app.Handler())
 	t.Cleanup(srv.Close)
 
 	resp, m := postJSON(t, srv.URL+"/precache", map[string]interface{}{"hash": strings.ToUpper(hA), "index": 2, "title": "X"})

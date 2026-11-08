@@ -4,7 +4,7 @@ WORKDIR /src
 COPY sidecar/go.mod sidecar/go.sum ./
 RUN go mod download
 COPY sidecar/ ./
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /torr-remote .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /torr-remote ./cmd/torr-remote
 
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates tzdata

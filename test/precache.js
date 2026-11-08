@@ -102,7 +102,7 @@ async function until(fn, ms) { const t0 = Date.now(); while (Date.now() - t0 < m
   const ts = await fakeTorrServer();
   const TS = `http://127.0.0.1:${ts.address().port}`;
   const bin = path.join(TMP, 'torr-remote');
-  execFileSync(GOBIN, ['build', '-o', bin, '.'], { cwd: path.join(ROOT, 'sidecar'), env: Object.assign({}, process.env, { TMPDIR: process.env.TMPDIR || path.join(os.homedir(), '.cache/gotmp'), CGO_ENABLED: '0' }), stdio: 'inherit' });
+  execFileSync(GOBIN, ['build', '-o', bin, './cmd/torr-remote'], { cwd: path.join(ROOT, 'sidecar'), env: Object.assign({}, process.env, { TMPDIR: process.env.TMPDIR || path.join(os.homedir(), '.cache/gotmp'), CGO_ENABLED: '0' }), stdio: 'inherit' });
   const PORT = 19000 + Math.floor(Math.random() * 1000);
   const DATA = path.join(TMP, 'data');
   const env = Object.assign({}, process.env, { TORR_SERVER: TS, TORR_PORT: String(PORT), TORR_LISTEN: '127.0.0.1', TORR_APP_DIR: path.join(ROOT, 'app'), TORR_DATA_DIR: DATA });

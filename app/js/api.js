@@ -1,13 +1,18 @@
 /* api.js — XMLHttpRequest wrappers for TorrServer and the torr-remote sidecar. ES5 only.
  *
  * On the TV the app is loaded from file:// and needs explicit addresses; tools/build_ipk.sh
- * substitutes the two placeholders. When served by the sidecar (http://<sidecar>:8791/tv/) the
- * sidecar is the page origin and TorrServer's address comes from GET /config. */
+ * substitutes the two placeholders (the sidecar one may carry a path, e.g. http://host:8090/tr
+ * when torr-remote runs inside TorrServer). When served by the sidecar itself (…/tv/) the
+ * sidecar base is this page's origin plus whatever precedes /tv/ in the path, and TorrServer's
+ * address comes from GET /config ("" there = same origin). */
 var API = (function () {
   'use strict';
 
   var fromHttp = (window.location.protocol === 'http:' || window.location.protocol === 'https:');
-  var SIDECAR = fromHttp ? window.location.protocol + '//' + window.location.host : 'http://SIDECAR_HOST:8791';
+  var SIDECAR = fromHttp
+    ? window.location.protocol + '//' + window.location.host + window.location.pathname.replace(/\/tv(\/.*)?$/, '')
+    : 'http://SIDECAR_HOST:8791';
+  SIDECAR = SIDECAR.replace(/\/+$/, '');
   var TS = fromHttp ? '' : 'http://TORRSERVER_HOST:8090';   /* '' until /config answers */
   var DEFAULT_TIMEOUT = 20000;
   var subsInfo = { enabled: false, sources: [] };          /* from /config */
@@ -125,7 +130,10 @@ var API = (function () {
    * whether subtitles are available. Falls back to the baked-in TorrServer if the sidecar is down. */
   function config() {
     return request('GET', SIDECAR + '/config', null, 8000).then(function (c) {
-      if (c && c.torrserver && (fromHttp || !TS)) TS = String(c.torrserver).replace(/\/+$/, '');
+      if (c && (fromHttp || !TS)) {
+        TS = String(c.torrserver || '').replace(/\/+$/, '');
+        if (!TS && fromHttp) TS = window.location.protocol + '//' + window.location.host;   /* embedded: same origin */
+      }
       if (c && c.subs) subsInfo = c.subs;
       return c;
     }, function (err) {
