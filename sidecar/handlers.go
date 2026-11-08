@@ -19,6 +19,10 @@ type Config struct {
 	// InternalTorrServer is what the sidecar's own goroutines (precache) call.
 	// Defaults to TorrServer; when embedded it is TorrServer's loopback listener.
 	InternalTorrServer string
+	// InternalTorrServerFunc, when set, is consulted on every internal call instead
+	// of InternalTorrServer: the embedding TorrServer only knows its loopback port
+	// after its listeners are up, i.e. after New has run.
+	InternalTorrServerFunc func() string
 	// BasePath is the URL prefix the App is mounted under ("" standalone, "/tr"
 	// inside TorrServer). It is stripped before routing and prepended to every
 	// URL the App hands out (phone page link, subtitle .vtt URLs).
