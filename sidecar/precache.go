@@ -47,8 +47,9 @@ type precacheFile struct {
 }
 
 type Precache struct {
-	ts   string // TorrServer base URL
-	path string // JSON file; "" = memory only
+	ts     string        // TorrServer base URL
+	tsFunc func() string // overrides ts when set (embedded: loopback port known late)
+	path   string        // JSON file; "" = memory only
 
 	mu      sync.Mutex
 	wg      sync.WaitGroup
@@ -69,6 +70,7 @@ func newPrecache(cfg Config) *Precache {
 	}
 	p := &Precache{
 		ts:         ts,
+		tsFunc:     cfg.InternalTorrServerFunc,
 		enabled:    true,
 		items:      map[string]*precacheItem{},
 		running:    map[string]context.CancelFunc{},
@@ -320,6 +322,16 @@ func (p *Precache) run(ctx context.Context, hash string, index int) {
 	}
 }
 
+// base is the TorrServer URL for internal calls.
+func (p *Precache) base() string {
+	if p.tsFunc != nil {
+		if u := strings.TrimRight(p.tsFunc(), "/"); u != "" {
+			return u
+		}
+	}
+	return p.ts
+}
+
 // forget drops an item whose torrent no longer exists on TorrServer.
 func (p *Precache) forget(hash string) {
 	p.mu.Lock()
@@ -336,7 +348,7 @@ func (p *Precache) forget(hash string) {
 // looks in memory and in the DB, so 404 means removed, not merely unloaded).
 func (p *Precache) torrentGone(ctx context.Context, hash string) bool {
 	body := strings.NewReader(`{"action":"get","hash":"` + hash + `"}`)
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, p.ts+"/torrents", body)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, p.base()+"/torrents", body)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := p.client.Do(req)
 	if err != nil {
@@ -368,7 +380,7 @@ func (p *Precache) finish(hash, msg string) {
 // stat from the JSON answer (3 = working, i.e. the preload ended).
 func (p *Precache) preloadRequest(ctx context.Context, hash string, index int) (int, error) {
 	q := url.Values{"link": {hash}, "index": {strconv.Itoa(index)}}
-	u := p.ts + "/stream?" + q.Encode() + "&preload&stat"
+	u := p.base() + "/stream?" + q.Encode() + "&preload&stat"
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	resp, err := p.client.Do(req)
 	if err != nil {
@@ -410,7 +422,7 @@ func (p *Precache) watch(ctx context.Context, hash string) (int, error) {
 // answers true so the stat-3 return keeps its old meaning.
 func (p *Precache) fileComplete(ctx context.Context, hash string, index int) (bool, string) {
 	body := strings.NewReader(`{"action":"get","hash":"` + hash + `"}`)
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, p.ts+"/torrents", body)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, p.base()+"/torrents", body)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := p.client.Do(req)
 	if err != nil {
@@ -452,7 +464,7 @@ func (p *Precache) fileComplete(ctx context.Context, hash string, index int) (bo
 
 func (p *Precache) getStat(ctx context.Context, hash string) (int, error) {
 	body := strings.NewReader(`{"action":"get","hash":"` + hash + `"}`)
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, p.ts+"/torrents", body)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, p.base()+"/torrents", body)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := p.client.Do(req)
 	if err != nil {
@@ -476,7 +488,7 @@ func (p *Precache) preloadStop(hash string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	body := strings.NewReader(`{"action":"preload_stop","hash":"` + hash + `"}`)
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, p.ts+"/torrents", body)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, p.base()+"/torrents", body)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := p.client.Do(req)
 	if err != nil {
