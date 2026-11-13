@@ -13,7 +13,8 @@
   var video = null;
   var hash = '', title = '', files = [], index = 0, fileIdx = 0;
   var pendingSeek = 0;
-  var osdTimer = null, saveTimer = null, statTimer = null;
+  var osdTimer = null, saveTimer = null, statTimer = null, stateTimer = null;
+  var stateBase = '';   /* last persistent text on #osd-state, shown again when a one-shot notice expires */
   var active = false;
   var seekHold = { timer: null, dir: 0 };
   var osdFocus = false;
@@ -55,10 +56,16 @@
     if (osdFocus) { osdTimer = setTimeout(hideOsd, OSD_TIMEOUT); return; }
     UI.removeClass($('osd'), 'show');
   }
-  function setState(msg) {
+  /* #osd-state is not inside #osd, so hideOsd() never clears it. transient = a one-shot notice that
+   * leaves by itself and gives the line back to the status underneath (paused, buffering, an error…);
+   * without it the text is a status that stays until something replaces it. */
+  function setState(msg, transient) {
     var s = $('osd-state');
+    if (stateTimer) { clearTimeout(stateTimer); stateTimer = null; }
+    if (!transient) stateBase = msg || '';
     s.textContent = msg || '';
     UI.toggleClass(s, 'show', !!msg);
+    if (transient && msg) stateTimer = setTimeout(function () { stateTimer = null; setState(stateBase); }, OSD_TIMEOUT);
   }
 
   function updateTime() {
@@ -125,11 +132,11 @@
     for (var k = 0; k < t.length; k++) t[k].enabled = (k === i);
     try { window.localStorage.setItem(LANG_KEY, String(t[i].language || '').toLowerCase()); } catch (e) { /* ignore */ }
     renderAudio();
-    if (announce) { setState('音轨：' + trackName(t[i], i)); showOsd(false); }
+    if (announce) { setState('音轨：' + trackName(t[i], i), true); showOsd(false); }
   }
   function cycleAudio() {
     var t = audioTracks();
-    if (!t || t.length < 2) { setState(t ? '只有一条音轨' : '此文件不支持切换音轨'); showOsd(false); return; }
+    if (!t || t.length < 2) { setState(t ? '只有一条音轨' : '此文件不支持切换音轨', true); showOsd(false); return; }
     setAudio((currentAudio() + 1) % t.length, true);
   }
   /* On a new file: prefer the language picked last time (season packs), else leave the default. */
@@ -174,8 +181,8 @@
   }
   function subAnnounce() {
     var sl = Subs.slots();
-    if (!sl[0] && !sl[1]) setState('字幕：关闭');
-    else setState('字幕：' + subName(sl[0] || sl[1]) + (sl[0] && sl[1] ? ' + ' + subName(sl[1]) : ''));
+    if (!sl[0] && !sl[1]) setState('字幕：关闭', true);
+    else setState('字幕：' + subName(sl[0] || sl[1]) + (sl[0] && sl[1] ? ' + ' + subName(sl[1]) : ''), true);
     showOsd(false);
   }
   function subLoad(n, sub, announce) {
@@ -183,11 +190,11 @@
       if (!active || Subs.current(n) !== sub) return cnt;
       subRemember();
       renderSubBadge();
-      if (announce) { if (cnt) subAnnounce(); else { setState('字幕文件为空'); showOsd(false); } }
+      if (announce) { if (cnt) subAnnounce(); else { setState('字幕文件为空', true); showOsd(false); } }
       return cnt;
     }, function (err) {
       Subs.clear(n); renderSubBadge();
-      if (announce) { setState('字幕加载失败：' + err.message); showOsd(false); }
+      if (announce) { setState('字幕加载失败：' + err.message, true); showOsd(false); }
       return 0;
     });
   }
@@ -347,7 +354,7 @@
     });
   }
   function openSubPanel(focusKind) {
-    if (!API.subsEnabled()) { setState('未配置字幕服务'); showOsd(false); return; }
+    if (!API.subsEnabled()) { setState('未配置字幕服务', true); showOsd(false); return; }
     var f = current();
     subPanel = true;
     osdFocus = true;
@@ -497,7 +504,8 @@
     }
     dead = null; stallSince = 0; probe = null; errStall = false;
     try { video.currentTime = t; } catch (e2) { /* ignore */ }
-    setState(msg);
+    setState('');          /* the prompt is answered: it must not come back when the notice expires */
+    setState(msg, true);
     startPlay();
     updateTime();
     showOsd(false);
@@ -555,7 +563,7 @@
     if (isFinite(dur) && dur > 0 && t > dur - 1) t = dur - 1;
     if (video.error) { loadFile(fileIdx, t); return; }   /* errored element ignores seeks: reopen at t */
     try { video.currentTime = t; } catch (e) { /* ignore */ }
-    setState((delta > 0 ? '▶▶ +' : '◀◀ −') + Math.abs(delta) + ' 秒');
+    setState((delta > 0 ? '▶▶ +' : '◀◀ −') + Math.abs(delta) + ' 秒', true);
     updateTime();
     showOsd(false);
   }
