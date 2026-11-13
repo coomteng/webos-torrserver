@@ -210,6 +210,7 @@ func (a *App) subsPost(w http.ResponseWriter, r *http.Request, p string) {
 		}
 		data, err := src.Download(ctx, *chosen)
 		if err != nil {
+			log.Printf("subs: fetch %s#%s %q: %v", src.Name(), id, chosen.Name, err)
 			sendError(w, r, 502, err.Error())
 			return
 		}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Result is one subtitle package offered by a source.
@@ -242,18 +245,100 @@ func (a *ASSRT) Files(ctx context.Context, id string) ([]File, error) {
 func (a *ASSRT) Download(ctx context.Context, f File) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", f.URL, nil)
 	if err != nil {
-		return nil, err
+		return nil, downloadErr(err)
 	}
 	req.Header.Set("User-Agent", a.UA)
 	resp, err := a.Client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, downloadErr(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("assrt download: HTTP %d", resp.StatusCode)
+		// Failures are redirects to an error page that states the reason. Report where we ended up
+		// and what it said; host and path only, the query carries the link's signature.
+		page, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		// The path is the redirect's to choose: keep it escaped and short.
+		where := resp.Request.URL.Host + resp.Request.URL.EscapedPath()
+		if len(where) > 120 {
+			where = where[:120] + "…"
+		}
+		msg := fmt.Sprintf("assrt download: HTTP %d at %s", resp.StatusCode, where)
+		if why := pageText(page, 200); why != "" {
+			msg += ": " + why
+		}
+		return nil, errors.New(msg)
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+}
+
+// downloadErr keeps the cause of a request error and drops the URL that net/http and net/url
+// quote in front of it: the query carries the link's signature.
+func downloadErr(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return fmt.Errorf("assrt download: %w", ue.Err)
+	}
+	return fmt.Errorf("assrt download: %w", err)
+}
+
+// pageText reduces an HTML page to its text on one line: tags, comments and the contents of
+// <script> and <style> dropped, entities decoded, control characters and whitespace runs
+// collapsed, at most max bytes, cut between runes.
+func pageText(page []byte, max int) string {
+	s := strings.ToValidUTF8(string(page), "") // the read limit may have split a rune; the page may not be UTF-8
+	// lower-cased for matching tag names; ASCII only, so offsets match s
+	low := strings.Map(func(r rune) rune {
+		if r >= 'A' && r <= 'Z' {
+			return r + 'a' - 'A'
+		}
+		return r
+	}, s)
+	var b strings.Builder
+	for {
+		i := strings.IndexByte(s, '<')
+		if i < 0 {
+			b.WriteString(s)
+			break
+		}
+		b.WriteString(s[:i])
+		b.WriteByte(' ')
+		s, low = s[i:], low[i:]
+		// find the end of what this "<" opens; an unclosed one swallows the rest
+		var end int
+		switch {
+		case strings.HasPrefix(low, "<!--"):
+			end = skipTo(low, 4, "-->")
+		case strings.HasPrefix(low, "<script"):
+			end = skipTo(low, skipTo(low, 0, "</script"), ">")
+		case strings.HasPrefix(low, "<style"):
+			end = skipTo(low, skipTo(low, 0, "</style"), ">")
+		default:
+			end = skipTo(low, 0, ">")
+		}
+		s, low = s[end:], low[end:]
+	}
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return ' '
+		}
+		return r
+	}, html.UnescapeString(b.String()))
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > max {
+		for max > 0 && !utf8.RuneStart(s[max]) {
+			max--
+		}
+		s = strings.TrimSpace(s[:max])
+	}
+	return s
+}
+
+// skipTo returns the offset just past the first mark in s at or after from, or len(s) if none.
+func skipTo(s string, from int, mark string) int {
+	if i := strings.Index(s[from:], mark); i >= 0 {
+		return from + i + len(mark)
+	}
+	return len(s)
 }
 
 func assrtFiles(raw json.RawMessage) []assrtFile {

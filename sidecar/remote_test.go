@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -336,6 +338,59 @@ func TestPhonePageCarriesSubsConfig(t *testing.T) {
 func regexpFind(s, pat string) string {
 	m := regexp.MustCompile(pat).FindString(s)
 	return m
+}
+
+// lockedBuffer collects log output written by handler goroutines.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+// A failed download reaches the TV as a 502 and is logged with source, id, file and reason, but
+// never with the signed query of the link.
+func TestSubsFetchDownloadFailureIsLogged(t *testing.T) {
+	app, srv, _ := newSubsTestApp(t)
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/sub/detail":
+			w.Write([]byte(`{"status":0,"sub":{"subs":[{"id":42,"filelist":[{"f":"x.chs.srt","url":"http://` + r.Host + `/onthefly/x.srt?_=1&-=SECRETSIG"}]}]}}`))
+		case "/onthefly/x.srt":
+			http.Redirect(w, r, "/download/error/abc?sig=SECRETSIG", http.StatusFound)
+		default:
+			w.WriteHeader(493)
+			w.Write([]byte("<html><body><h1>Too many requests</h1></body></html>"))
+		}
+	}))
+	t.Cleanup(cdn.Close)
+	app.subs.sources["assrt"].(*subs.ASSRT).Base = cdn.URL + "/v1"
+	var logged lockedBuffer
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	resp, m := postJSON(t, srv.URL+"/subs/fetch", map[string]interface{}{"hash": "0123456789abcdef0123456789abcdef01234567", "index": 1, "src": "assrt", "id": "42"})
+	want := "assrt download: HTTP 493 at " + strings.TrimPrefix(cdn.URL, "http://") + "/download/error/abc: Too many requests"
+	if resp.StatusCode != 502 || m["error"] != want {
+		t.Fatalf("fetch: %d %v, want 502 %q", resp.StatusCode, m, want)
+	}
+	out := logged.String()
+	if !strings.Contains(out, `subs: fetch assrt#42 "x.chs.srt": `+want) {
+		t.Fatalf("download failure not logged: %q", out)
+	}
+	if strings.Contains(out, "SECRETSIG") || strings.Contains(out, "?") {
+		t.Fatalf("log leaks the query: %q", out)
+	}
 }
 
 func TestSubsDisabled(t *testing.T) {
