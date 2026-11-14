@@ -364,8 +364,9 @@ func TestASSRTPerFileSuccessSkipsArchive(t *testing.T) {
 	}
 }
 
+// rar is read since rardecode was added (rar_test.go); 7z still is not.
 func TestASSRTFallbackUnsupported(t *testing.T) {
-	for _, c := range []struct{ kind, magic string }{{"rar", "Rar!\x1a\x07\x00"}, {"7z", "7z\xbc\xaf\x27\x1c"}} {
+	for _, c := range []struct{ kind, magic string }{{"7z", "7z\xbc\xaf\x27\x1c"}} {
 		t.Run(c.kind, func(t *testing.T) {
 			srv, _ := fallbackCDN(t, 493, serveBytes([]byte(c.magic+strings.Repeat("\x00", 64))))
 			_, err := newTestASSRT(srv, "tok").Download(context.Background(), fallbackFile(srv.URL, "x.chs.srt", "pack."+c.kind))
@@ -447,7 +448,9 @@ func TestASSRTFallbackArchiveNameSanitised(t *testing.T) {
 		body          []byte
 		hostile, none string // message for the hostile name and for no name
 	}{
-		{"rar", []byte("Rar!\x1a\x07\x00"), pre + "is rar, which is not supported: evil INJECTED LOG LINE <x>?sig=SECRET", pre + "is rar, which is not supported: package"},
+		{"7z", []byte("7z\xbc\xaf\x27\x1c"), pre + "is 7z, which is not supported: evil INJECTED LOG LINE <x>?sig=SECRET", pre + "is 7z, which is not supported: package"},
+		{"broken rar", []byte("Rar!\x1a\x07\x00"), pre + "evil INJECTED LOG LINE <x>?sig=SECRET could not be read", pre + "package could not be read"},
+		{"rar without subtitle", makeRar5(0, 0, rarPairs("readme.txt", "nope")...), pre + "evil INJECTED LOG LINE <x>?sig=SECRET has no subtitle file", pre + "package has no subtitle file"},
 		{"unknown", []byte("\x1f\x8b\x08 something else"), pre + "evil INJECTED LOG LINE <x>?sig=SECRET is in an unknown format", pre + "package is in an unknown format"},
 		{"broken zip", []byte("PK\x03\x04 truncated"), pre + "evil INJECTED LOG LINE <x>?sig=SECRET could not be read", pre + "package could not be read"},
 		{"no subtitle", makeZip(t, map[string]string{"readme.txt": "nope"}), pre + "evil INJECTED LOG LINE <x>?sig=SECRET has no subtitle file", pre + "package has no subtitle file"},

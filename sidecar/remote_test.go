@@ -446,6 +446,58 @@ func TestSubsFetchFallsBackToArchive(t *testing.T) {
 	}
 }
 
+// The same with a rar package whose members are not named like the file list: the whole archive
+// comes back from the download and the member for the video's episode and language is stored.
+// The same archive uploaded from the phone is expanded too.
+func TestSubsFetchFallsBackToRar(t *testing.T) {
+	app, srv, _ := newSubsTestApp(t)
+	hash := "0123456789abcdef0123456789abcdef01234567"
+	pack, err := os.ReadFile("subs/testdata/pack.rar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/sub/detail":
+			w.Write([]byte(`{"status":0,"sub":{"subs":[{"id":42,"filename":"pack.rar","url":"http://` + r.Host + `/download/42/pack.rar?_=1&-=SECRETSIG",` +
+				`"filelist":[{"f":"第1集.简体.srt","url":"http://` + r.Host + `/onthefly/42/-/1/a.srt?_=1&-=SECRETSIG"},{"f":"第2集.简体.srt","url":"http://` + r.Host + `/onthefly/42/-/2/b.srt?_=1&-=SECRETSIG"}]}]}}`))
+		case "/download/42/pack.rar":
+			w.Write(pack)
+		default:
+			w.WriteHeader(493)
+		}
+	}))
+	t.Cleanup(cdn.Close)
+	app.subs.sources["assrt"].(*subs.ASSRT).Base = cdn.URL + "/v1"
+
+	resp, m := postJSON(t, srv.URL+"/subs/fetch", map[string]interface{}{"hash": hash, "index": 1, "src": "assrt", "id": "42", "video": "Show.S01E02.1080p.WEB-DL.mkv"})
+	if resp.StatusCode != 200 {
+		t.Fatalf("fetch: %d %v", resp.StatusCode, m)
+	}
+	sub := m["sub"].(map[string]interface{})
+	if sub["name"] != "Show.S01E02.chs.srt" || sub["cues"].(float64) != 1 || sub["src"] != "assrt" {
+		t.Fatalf("fetched sub: %v", sub)
+	}
+	vresp, err := http.Get(srv.URL + sub["url"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(vresp.Body)
+	if vresp.StatusCode != 200 || !strings.Contains(string(body), "第二集") {
+		t.Fatalf("vtt: %d %q", vresp.StatusCode, body)
+	}
+
+	up, err := http.Post(srv.URL+"/subs/upload?hash="+hash+"&index=2&name=pack.rar&video=Show.S01E01.mkv", "application/octet-stream", bytes.NewReader(pack))
+	if err != nil {
+		t.Fatal(err)
+	}
+	json.NewDecoder(up.Body).Decode(&m)
+	up.Body.Close()
+	if sub := m["sub"].(map[string]interface{}); up.StatusCode != 200 || sub["name"] != "Show.S01E01.chs.srt" || sub["src"] != "upload" {
+		t.Fatalf("upload: %d %v", up.StatusCode, m)
+	}
+}
+
 func TestSubsDisabled(t *testing.T) {
 	_, srv := newTestApp(t)
 	if r, _ := http.Get(srv.URL + "/subs/search?q=x"); r.StatusCode != 404 {

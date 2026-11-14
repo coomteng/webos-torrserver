@@ -1,0 +1,3 @@
+- `assrt_search.json`, `assrt_detail.json`: recorded api.assrt.net responses.
+- `pack.rar`: RAR5, stored members, written by `packRar` in `../rar_test.go` (`go test ./subs -run TestRarFixtures -update`).
+- `sample.rar`: RAR5 written by WinRAR with one compressed member, copied unchanged from `testdata/sample.rar` of github.com/mholt/archiver/v3 v3.5.1 (MIT licence, Copyright (c) 2016 Matthew Holt).

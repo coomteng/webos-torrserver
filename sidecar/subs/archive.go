@@ -3,14 +3,20 @@ package subs
 import (
 	"archive/zip"
 	"bytes"
+	"errors"
 	"io"
 	"path"
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
+	"time"
+	"unicode/utf8"
+
+	"github.com/nwaples/rardecode/v2"
 )
 
-// Entry is one subtitle file, either standalone or taken out of a zip.
+// Entry is one subtitle file, either standalone or taken out of a zip or rar.
 type Entry struct {
 	Name string
 	Data []byte
@@ -21,12 +27,15 @@ var subExtRe = regexp.MustCompile(`(?i)\.(srt|ass|ssa|vtt)$`)
 // IsSubtitleName reports whether the file name has a subtitle extension.
 func IsSubtitleName(n string) bool { return subExtRe.MatchString(n) }
 
-// Limits on archives that come from the network. Variables so that tests can lower them.
+// Limits on archives that come from the network; the maxZip ones hold for rar too. Variables so
+// that tests can lower them.
 var (
 	maxArchiveBytes int64 = 20 << 20 // a downloaded package
 	maxZipEntries         = 2000     // members looked at
 	maxZipMember    int64 = 2 << 20  // one member, decompressed
 	maxZipTotal     int64 = 32 << 20 // all members kept, decompressed
+	maxRarDict      int64 = 64 << 20 // rar decompression window (WinRAR's default is 32 MB)
+	rarTimeout            = 10 * time.Second
 )
 
 // archiveKind tells a zip, rar or 7z archive by its magic; "" for anything else.
@@ -43,10 +52,32 @@ func archiveKind(data []byte) string {
 }
 
 // Expand returns the subtitle files inside data: the file itself, or the .srt/.ass/.ssa/.vtt
-// members of a zip (nested directories flattened, __MACOSX junk skipped). Members larger than
-// maxZipMember are skipped; it stops after maxZipEntries members or maxZipTotal bytes.
+// members of a zip or rar (nested directories flattened, __MACOSX junk skipped). Members larger
+// than maxZipMember are skipped; it stops after maxZipEntries members or maxZipTotal bytes.
 func Expand(name string, data []byte) []Entry {
-	if archiveKind(data) == "zip" {
+	switch archiveKind(data) {
+	case "rar":
+		var out []Entry
+		var total int64
+		err := rarWalk(data, func(h *rardecode.FileHeader, r io.Reader) bool {
+			base, ok := subBase(h.Name, !utf8.ValidString(h.Name))
+			if !ok {
+				return true
+			}
+			b := rarRead(h, r)
+			if len(b) == 0 {
+				return true
+			}
+			if total += int64(len(b)); total > maxZipTotal {
+				return false
+			}
+			out = append(out, Entry{Name: base, Data: b})
+			return true
+		})
+		if err == nil || len(out) > 0 { // a rar that breaks off keeps the members before the break
+			return out
+		}
+	case "zip":
 		if zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data))); err == nil {
 			var out []Entry
 			var total int64
@@ -77,11 +108,11 @@ func Expand(name string, data []byte) []Entry {
 	return []Entry{{Name: name, Data: data}}
 }
 
-// unreadableMember is the error for a zip member that was found by name but could not be read:
-// encrypted, corrupt or larger than maxZipMember.
+// unreadableMember is the error for an archive member that was found by name but could not be
+// read: encrypted, corrupt or larger than maxZipMember.
 type unreadableMember struct{ Name string }
 
-func (e *unreadableMember) Error() string { return "zip: cannot read " + e.Name }
+func (e *unreadableMember) Error() string { return "archive: cannot read " + e.Name }
 
 // zipMember looks in the zip for the subtitle member whose base name is want (exactly, else
 // ignoring case) and decompresses only that one. subtitles counts the subtitle members seen,
@@ -140,9 +171,12 @@ func zipSubName(f *zip.File) (string, bool) {
 }
 
 // zipSubBase is zipSubName without the size check.
-func zipSubBase(f *zip.File) (string, bool) {
-	name := f.Name
-	if f.NonUTF8 {
+func zipSubBase(f *zip.File) (string, bool) { return subBase(f.Name, f.NonUTF8) }
+
+// subBase returns an archive member's base name and whether it names a subtitle; a name that is
+// not UTF-8 is decoded as GBK or Big5.
+func subBase(name string, nonUTF8 bool) (string, bool) {
+	if nonUTF8 {
 		name = Decode([]byte(name))
 	}
 	name = strings.ReplaceAll(name, "\\", "/")
@@ -163,6 +197,109 @@ func zipRead(f *zip.File) []byte {
 		return nil
 	}
 	return b
+}
+
+var errRarTimeout = errors.New("rar: took too long")
+
+// rarMu lets one rar be decoded at a time: a decoder may hold its window and model in memory.
+var rarMu sync.Mutex
+
+// rarInput hands the archive to the decoder and fails once the deadline has passed, which stops
+// the decoder wherever it is: also while it decompresses members only to skip them, as it must
+// in a solid archive.
+type rarInput struct {
+	*bytes.Reader
+	deadline time.Time
+}
+
+func (in *rarInput) Read(p []byte) (int, error) {
+	if time.Now().After(in.deadline) {
+		return 0, errRarTimeout
+	}
+	return in.Reader.Read(p)
+}
+
+// rarWalk calls visit for the files of a rar (RAR 1.5 to 7, one volume) in archive order, at most
+// maxZipEntries members, until visit returns false; r reads the member's contents. The names are
+// UTF-8, except RAR 4 names stored without the Unicode flag, which are the bytes as archived.
+// Encrypted headers, a volume that continues elsewhere, corrupt data, a window larger than
+// maxRarDict and running out of rarTimeout are errors.
+func rarWalk(data []byte, visit func(h *rardecode.FileHeader, r io.Reader) bool) (err error) {
+	rarMu.Lock()
+	defer rarMu.Unlock()
+	defer func() {
+		if recover() != nil { // the decoder is fed bytes from the network
+			err = errors.New("rar: corrupt archive")
+		}
+	}()
+	in := &rarInput{Reader: bytes.NewReader(data), deadline: time.Now().Add(rarTimeout)}
+	// a small read buffer, so that the deadline is looked at often
+	rr, err := rardecode.NewReader(in, rardecode.MaxDictionarySize(maxRarDict), rardecode.BufferSize(256))
+	if err != nil {
+		return err
+	}
+	for i := 0; i < maxZipEntries; i++ {
+		h, err := rr.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !h.IsDir && !visit(h, rr) {
+			return nil
+		}
+	}
+	return nil
+}
+
+// rarFits reports whether the member does not declare more than maxZipMember bytes.
+func rarFits(h *rardecode.FileHeader) bool { return h.UnKnownSize || h.UnPackedSize <= maxZipMember }
+
+// rarRead decompresses the current member, reading at most maxZipMember+1 bytes; nil if it is
+// encrypted, cannot be read (the checksum is verified) or is larger than maxZipMember.
+func rarRead(h *rardecode.FileHeader, r io.Reader) []byte {
+	if h.Encrypted || !rarFits(h) {
+		return nil
+	}
+	b, err := io.ReadAll(io.LimitReader(r, maxZipMember+1))
+	if err != nil || int64(len(b)) > maxZipMember {
+		return nil
+	}
+	return b
+}
+
+// rarMember is zipMember for a rar. A rar is read front to back, so it stops at the member
+// named exactly want and reads the first one named so ignoring case as it passes it. An archive
+// that breaks off is an error unless the member was found before the break.
+func rarMember(data []byte, want string) (hit *Entry, subtitles int, err error) {
+	var fold *Entry // Data is nil if the member could not be read
+	exact := false
+	err = rarWalk(data, func(h *rardecode.FileHeader, r io.Reader) bool {
+		base, ok := subBase(h.Name, !utf8.ValidString(h.Name))
+		if !ok {
+			return true
+		}
+		if rarFits(h) {
+			subtitles++
+		}
+		switch {
+		case base == want:
+			fold, exact = &Entry{Name: base, Data: rarRead(h, r)}, true
+		case strings.EqualFold(base, want) && fold == nil:
+			fold = &Entry{Name: base, Data: rarRead(h, r)}
+		}
+		return !exact
+	})
+	switch {
+	case fold == nil:
+		return nil, subtitles, err
+	case fold.Data == nil:
+		return nil, subtitles, &unreadableMember{Name: fold.Name}
+	case len(fold.Data) > 0:
+		hit = fold
+	}
+	return hit, subtitles, nil
 }
 
 // Lang tags recognised in file names and ASSRT langlist keys, in display order.

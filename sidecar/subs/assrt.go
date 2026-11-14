@@ -297,7 +297,7 @@ func (a *ASSRT) fetch(ctx context.Context, rawurl string, limit int64) ([]byte, 
 }
 
 // fromArchive downloads the package's archive after the per-file link failed with status and
-// returns the member named like f, or the whole zip when no member is: the caller expands it.
+// returns the member named like f, or the whole zip or rar when no member is: the caller expands it.
 // Messages name the archive by its file name only, never by its signed link; the name is the
 // remote server's to choose, so it goes through msgName.
 func (a *ASSRT) fromArchive(ctx context.Context, f File, status int) ([]byte, error) {
@@ -317,11 +317,15 @@ func (a *ASSRT) fromArchive(ctx context.Context, f File, status int) ([]byte, er
 		return fail(" and the archive is larger than %d MB: %s", maxArchiveBytes>>20, name)
 	}
 	switch kind := archiveKind(data); kind {
-	case "zip":
-		hit, subtitles, err := zipMember(data, f.Name)
+	case "zip", "rar":
+		member := zipMember
+		if kind == "rar" {
+			member = rarMember
+		}
+		hit, subtitles, err := member(data, f.Name)
 		var um *unreadableMember
 		switch {
-		case errors.As(err, &um): // do not hand on the whole zip: another member would be picked
+		case errors.As(err, &um): // do not hand on the whole archive: another member would be picked
 			return fail(" and %s in the archive could not be read", msgName(um.Name))
 		case err != nil:
 			return fail(" and the archive %s could not be read", name)
@@ -331,7 +335,7 @@ func (a *ASSRT) fromArchive(ctx context.Context, f File, status int) ([]byte, er
 			return fail(" and the archive %s has no subtitle file", name)
 		}
 		return data, nil
-	case "rar", "7z":
+	case "7z":
 		return fail(" and the archive is %s, which is not supported: %s", kind, name)
 	}
 	if IsSubtitleName(f.ArchiveName) && len(data) <= maxFileBytes { // a single-file package is the subtitle itself
