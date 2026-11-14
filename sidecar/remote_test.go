@@ -1,6 +1,7 @@
 package torrremote
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/json"
 	"io"
@@ -390,6 +391,58 @@ func TestSubsFetchDownloadFailureIsLogged(t *testing.T) {
 	}
 	if strings.Contains(out, "SECRETSIG") || strings.Contains(out, "?") {
 		t.Fatalf("log leaks the query: %q", out)
+	}
+}
+
+// ASSRT's per-file extraction answers 493 for every file; the fetch must still succeed by taking
+// the file out of the package's archive, whose link comes in the same detail response.
+func TestSubsFetchFallsBackToArchive(t *testing.T) {
+	app, srv, _ := newSubsTestApp(t)
+	hash := "0123456789abcdef0123456789abcdef01234567"
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, f := range [][2]string{
+		{"pack/x.chs.srt", "1\n00:00:01,000 --> 00:00:02,000\n来自压缩包\n\n2\n00:00:03,000 --> 00:00:04,000\nsecond\n\n3\n00:00:05,000 --> 00:00:06,000\nthird\n"},
+		{"pack/x.eng.srt", "1\n00:00:01,000 --> 00:00:02,000\nenglish only\n"},
+	} {
+		w, _ := zw.Create(f[0])
+		w.Write([]byte(f[1]))
+	}
+	zw.Close()
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/sub/detail":
+			w.Write([]byte(`{"status":0,"sub":{"subs":[{"id":42,"filename":"pack.zip","url":"http://` + r.Host + `/download/42/pack.zip?_=1&-=SECRETSIG",` +
+				`"filelist":[{"f":"x.chs.srt","url":"http://` + r.Host + `/onthefly/42/-/1/x.chs.srt?_=1&-=SECRETSIG"},{"f":"x.eng.srt","url":"http://` + r.Host + `/onthefly/42/-/2/x.eng.srt?_=1&-=SECRETSIG"}]}]}}`))
+		case "/download/42/pack.zip":
+			w.Write(buf.Bytes())
+		default:
+			w.WriteHeader(493)
+			w.Write([]byte("<html><body><h1>啊呀！服务器抽风啦！请稍后重试~</h1></body></html>"))
+		}
+	}))
+	t.Cleanup(cdn.Close)
+	app.subs.sources["assrt"].(*subs.ASSRT).Base = cdn.URL + "/v1"
+
+	resp, m := postJSON(t, srv.URL+"/subs/fetch", map[string]interface{}{"hash": hash, "index": 1, "src": "assrt", "id": "42", "video": "x.mkv"})
+	if resp.StatusCode != 200 {
+		t.Fatalf("fetch: %d %v", resp.StatusCode, m)
+	}
+	sub := m["sub"].(map[string]interface{})
+	if sub["name"] != "x.chs.srt" || sub["cues"].(float64) != 3 || sub["src"] != "assrt" {
+		t.Fatalf("fetched sub: %v", sub)
+	}
+	_, m = getJSON(t, srv.URL+"/subs/list?hash="+hash+"&index=1")
+	if l := m["subs"].([]interface{}); len(l) != 1 {
+		t.Fatalf("list: %v", m)
+	}
+	vresp, err := http.Get(srv.URL + sub["url"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(vresp.Body)
+	if vresp.StatusCode != 200 || !strings.Contains(string(body), "来自压缩包") {
+		t.Fatalf("vtt: %d %q", vresp.StatusCode, body)
 	}
 }
 

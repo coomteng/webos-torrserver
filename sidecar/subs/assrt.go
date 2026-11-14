@@ -34,6 +34,9 @@ type Result struct {
 type File struct {
 	Name string
 	URL  string
+	// The whole package the file belongs to, for when the per-file link fails. Empty if unknown.
+	Archive     string
+	ArchiveName string
 }
 
 // Source is a subtitle site.
@@ -228,7 +231,7 @@ func (a *ASSRT) Files(ctx context.Context, id string) ([]File, error) {
 	var out []File
 	for _, f := range assrtFiles(s.Filelist) {
 		if f.URL != "" {
-			out = append(out, File{Name: f.F, URL: f.URL})
+			out = append(out, File{Name: f.F, URL: f.URL, Archive: s.URL, ArchiveName: s.Filename})
 		}
 	}
 	if len(out) == 0 && s.URL != "" {
@@ -241,9 +244,31 @@ func (a *ASSRT) Files(ctx context.Context, id string) ([]File, error) {
 }
 
 // Download fetches a file URL from the detail response. These are CDN links that do not count
-// against the API quota, so no gate.
+// against the API quota, so no gate. When the per-file link answers with an error status (the
+// on-the-fly extraction fails on ASSRT's side), the file is taken from the package's archive.
 func (a *ASSRT) Download(ctx context.Context, f File) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", f.URL, nil)
+	data, err := a.fetch(ctx, f.URL, maxFileBytes)
+	var se *statusError
+	if errors.As(err, &se) && f.Archive != "" && f.Archive != f.URL {
+		return a.fromArchive(ctx, f, se.Status)
+	}
+	return data, err
+}
+
+// maxFileBytes bounds one subtitle file taken from the network.
+const maxFileBytes = 8 << 20
+
+// statusError is a download answered with a status other than 200.
+type statusError struct {
+	Status int
+	msg    string
+}
+
+func (e *statusError) Error() string { return e.msg }
+
+// fetch GETs a CDN link and returns at most limit bytes of the body.
+func (a *ASSRT) fetch(ctx context.Context, rawurl string, limit int64) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", rawurl, nil)
 	if err != nil {
 		return nil, downloadErr(err)
 	}
@@ -266,9 +291,73 @@ func (a *ASSRT) Download(ctx context.Context, f File) ([]byte, error) {
 		if why := pageText(page, 200); why != "" {
 			msg += ": " + why
 		}
-		return nil, errors.New(msg)
+		return nil, &statusError{Status: resp.StatusCode, msg: msg}
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	return io.ReadAll(io.LimitReader(resp.Body, limit))
+}
+
+// fromArchive downloads the package's archive after the per-file link failed with status and
+// returns the member named like f, or the whole zip when no member is: the caller expands it.
+// Messages name the archive by its file name only, never by its signed link; the name is the
+// remote server's to choose, so it goes through msgName.
+func (a *ASSRT) fromArchive(ctx context.Context, f File, status int) ([]byte, error) {
+	fail := func(format string, args ...interface{}) ([]byte, error) {
+		return nil, fmt.Errorf("assrt: per-file download failed (HTTP %d)"+format, append([]interface{}{status}, args...)...)
+	}
+	name := msgName(f.ArchiveName)
+	data, err := a.fetch(ctx, f.Archive, maxArchiveBytes+1)
+	if err != nil {
+		var se *statusError
+		if errors.As(err, &se) {
+			return fail("; archive failed too (HTTP %d)", se.Status)
+		}
+		return fail("; archive failed too (%s)", cutString(strings.TrimPrefix(err.Error(), "assrt download: "), 60))
+	}
+	if int64(len(data)) > maxArchiveBytes {
+		return fail(" and the archive is larger than %d MB: %s", maxArchiveBytes>>20, name)
+	}
+	switch kind := archiveKind(data); kind {
+	case "zip":
+		hit, subtitles, err := zipMember(data, f.Name)
+		var um *unreadableMember
+		switch {
+		case errors.As(err, &um): // do not hand on the whole zip: another member would be picked
+			return fail(" and %s in the archive could not be read", msgName(um.Name))
+		case err != nil:
+			return fail(" and the archive %s could not be read", name)
+		case hit != nil:
+			return hit.Data, nil
+		case subtitles == 0:
+			return fail(" and the archive %s has no subtitle file", name)
+		}
+		return data, nil
+	case "rar", "7z":
+		return fail(" and the archive is %s, which is not supported: %s", kind, name)
+	}
+	if IsSubtitleName(f.ArchiveName) && len(data) <= maxFileBytes { // a single-file package is the subtitle itself
+		return data, nil
+	}
+	return fail(" and the archive %s is in an unknown format", name)
+}
+
+// msgName makes a file name from the network fit for a message that is logged and shown on the
+// TV: one line without control or format characters, at most 80 bytes, "package" if nothing is left.
+func msgName(s string) string {
+	if s = strings.TrimSpace(cutString(oneLine(s), 80)); s != "" {
+		return s
+	}
+	return "package"
+}
+
+// cutString returns at most max bytes of s, cut between runes.
+func cutString(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	for max > 0 && !utf8.RuneStart(s[max]) {
+		max--
+	}
+	return s[:max]
 }
 
 // downloadErr keeps the cause of a request error and drops the URL that net/http and net/url
@@ -317,13 +406,7 @@ func pageText(page []byte, max int) string {
 		}
 		s, low = s[end:], low[end:]
 	}
-	s = strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
-			return ' '
-		}
-		return r
-	}, html.UnescapeString(b.String()))
-	s = strings.Join(strings.Fields(s), " ")
+	s = oneLine(html.UnescapeString(b.String()))
 	if len(s) > max {
 		for max > 0 && !utf8.RuneStart(s[max]) {
 			max--
@@ -331,6 +414,17 @@ func pageText(page []byte, max int) string {
 		s = strings.TrimSpace(s[:max])
 	}
 	return s
+}
+
+// oneLine turns control and format characters into spaces and collapses whitespace runs.
+func oneLine(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return ' '
+		}
+		return r
+	}, s)
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // skipTo returns the offset just past the first mark in s at or after from, or len(s) if none.

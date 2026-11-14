@@ -3,6 +3,8 @@ package subs
 import (
 	"archive/zip"
 	"bytes"
+	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -174,6 +176,90 @@ func TestExpandAndPick(t *testing.T) {
 	if e := Expand("x.srt", []byte(srtUTF8)); len(e) != 1 || e[0].Name != "x.srt" {
 		t.Fatalf("plain file: %+v", names(e))
 	}
+}
+
+// makeZipOrdered writes the members in the order given, as name, content pairs.
+func makeZipOrdered(t *testing.T, pairs ...string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for i := 0; i+1 < len(pairs); i += 2 {
+		w, _ := zw.Create(pairs[i])
+		w.Write([]byte(pairs[i+1]))
+	}
+	zw.Close()
+	return buf.Bytes()
+}
+
+// A zip from the network is bounded in entries scanned, bytes per member and bytes kept in all.
+func TestZipLimits(t *testing.T) {
+	oldEntries, oldMember, oldTotal := maxZipEntries, maxZipMember, maxZipTotal
+	t.Cleanup(func() { maxZipEntries, maxZipMember, maxZipTotal = oldEntries, oldMember, oldTotal })
+	cue := strings.Repeat("x", 50)
+
+	t.Run("entries", func(t *testing.T) {
+		maxZipEntries, maxZipMember, maxZipTotal = 3, oldMember, oldTotal
+		z := makeZipOrdered(t, "a.srt", cue, "b.srt", cue, "c.srt", cue, "d.srt", cue, "e.srt", cue)
+		if got := strings.Join(names(Expand("pack.zip", z)), " "); got != "a.srt b.srt c.srt" {
+			t.Fatalf("expanded %q", got)
+		}
+		if hit, n, err := zipMember(z, "e.srt"); hit != nil || n != 3 || err != nil {
+			t.Fatalf("zipMember past the cap: hit=%v subtitles=%d err=%v", hit, n, err)
+		}
+	})
+	t.Run("member", func(t *testing.T) {
+		maxZipEntries, maxZipMember, maxZipTotal = oldEntries, 100, oldTotal
+		// lying.srt declares 10 bytes and carries 300: it must be dropped, not cut to the limit
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		w, _ := zw.Create("big.srt")
+		w.Write([]byte(strings.Repeat("y", 300)))
+		w, _ = zw.CreateRaw(&zip.FileHeader{Name: "lying.srt", Method: zip.Store, CompressedSize64: 300, UncompressedSize64: 10})
+		w.Write([]byte(strings.Repeat("z", 300)))
+		w, _ = zw.Create("small.srt")
+		w.Write([]byte(cue))
+		zw.Close()
+		es := Expand("pack.zip", buf.Bytes())
+		if len(es) != 1 || es[0].Name != "small.srt" || string(es[0].Data) != cue {
+			t.Fatalf("expanded %v", names(es))
+		}
+		for _, n := range []string{"big.srt", "lying.srt"} {
+			hit, subtitles, err := zipMember(buf.Bytes(), n)
+			if hit != nil {
+				t.Fatalf("zipMember returned %d bytes of oversize %s", len(hit.Data), n)
+			}
+			// found but unreadable is not a miss
+			var um *unreadableMember
+			if !errors.As(err, &um) || um.Name != n || subtitles != 2 {
+				t.Fatalf("zipMember oversize %s: subtitles=%d err=%v", n, subtitles, err)
+			}
+		}
+		if hit, n, err := zipMember(buf.Bytes(), "absent.srt"); hit != nil || n != 2 || err != nil {
+			t.Fatalf("zipMember miss: hit=%v subtitles=%d err=%v", hit, n, err)
+		}
+		if hit, n, err := zipMember(buf.Bytes(), "SMALL.srt"); err != nil || hit == nil || string(hit.Data) != cue || n != 2 {
+			t.Fatalf("zipMember small: hit=%v subtitles=%d err=%v", hit, n, err)
+		}
+	})
+	t.Run("total", func(t *testing.T) {
+		maxZipEntries, maxZipMember, maxZipTotal = oldEntries, oldMember, 120
+		es := Expand("pack.zip", makeZipOrdered(t, "a.srt", cue, "b.srt", cue, "c.srt", cue, "d.srt", cue))
+		total := 0
+		for _, e := range es {
+			total += len(e.Data)
+		}
+		if len(es) != 2 || total > 120 {
+			t.Fatalf("kept %d bytes in %v", total, names(es))
+		}
+	})
+	t.Run("no subtitle", func(t *testing.T) {
+		maxZipEntries, maxZipMember, maxZipTotal = oldEntries, oldMember, oldTotal
+		srv, _ := fallbackCDN(t, 493, serveBytes(makeZip(t, map[string]string{"readme.txt": "nope", "__MACOSX/._x.chs.srt": "junk"})))
+		_, err := newTestASSRT(srv, "tok").Download(context.Background(), fallbackFile(srv.URL, "x.chs.srt", "pack.zip"))
+		if err == nil || !strings.HasPrefix(err.Error(), "assrt: per-file download failed (HTTP 493)") || !strings.HasSuffix(err.Error(), "has no subtitle file") {
+			t.Fatalf("got %v", err)
+		}
+	})
 }
 
 func names(es []Entry) []string {

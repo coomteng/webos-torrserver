@@ -21,26 +21,51 @@ var subExtRe = regexp.MustCompile(`(?i)\.(srt|ass|ssa|vtt)$`)
 // IsSubtitleName reports whether the file name has a subtitle extension.
 func IsSubtitleName(n string) bool { return subExtRe.MatchString(n) }
 
+// Limits on archives that come from the network. Variables so that tests can lower them.
+var (
+	maxArchiveBytes int64 = 20 << 20 // a downloaded package
+	maxZipEntries         = 2000     // members looked at
+	maxZipMember    int64 = 2 << 20  // one member, decompressed
+	maxZipTotal     int64 = 32 << 20 // all members kept, decompressed
+)
+
+// archiveKind tells a zip, rar or 7z archive by its magic; "" for anything else.
+func archiveKind(data []byte) string {
+	switch {
+	case bytes.HasPrefix(data, []byte("PK\x03\x04")):
+		return "zip"
+	case bytes.HasPrefix(data, []byte("Rar!\x1a\x07")):
+		return "rar"
+	case bytes.HasPrefix(data, []byte("7z\xbc\xaf\x27\x1c")):
+		return "7z"
+	}
+	return ""
+}
+
 // Expand returns the subtitle files inside data: the file itself, or the .srt/.ass/.ssa/.vtt
-// members of a zip (nested directories flattened, __MACOSX junk skipped). Max 2 MB per member.
+// members of a zip (nested directories flattened, __MACOSX junk skipped). Members larger than
+// maxZipMember are skipped; it stops after maxZipEntries members or maxZipTotal bytes.
 func Expand(name string, data []byte) []Entry {
-	if bytes.HasPrefix(data, []byte("PK\x03\x04")) {
+	if archiveKind(data) == "zip" {
 		if zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data))); err == nil {
 			var out []Entry
-			for _, f := range zr.File {
-				base := path.Base(f.Name)
-				if !IsSubtitleName(base) || strings.HasPrefix(f.Name, "__MACOSX") || strings.HasPrefix(base, ".") || f.UncompressedSize64 > 2<<20 {
+			var total int64
+			for i, f := range zr.File {
+				if i >= maxZipEntries {
+					break
+				}
+				base, ok := zipSubName(f)
+				if !ok {
 					continue
 				}
-				rc, err := f.Open()
-				if err != nil {
+				b := zipRead(f)
+				if len(b) == 0 {
 					continue
 				}
-				b, err := io.ReadAll(io.LimitReader(rc, 2<<20))
-				rc.Close()
-				if err == nil && len(b) > 0 {
-					out = append(out, Entry{Name: zipName(f), Data: b})
+				if total += int64(len(b)); total > maxZipTotal {
+					break
 				}
+				out = append(out, Entry{Name: base, Data: b})
 			}
 			return out
 		}
@@ -52,12 +77,92 @@ func Expand(name string, data []byte) []Entry {
 	return []Entry{{Name: name, Data: data}}
 }
 
-// zip member names are CP437 unless the UTF-8 flag is set; Chinese archives are usually GBK.
-func zipName(f *zip.File) string {
-	if f.NonUTF8 {
-		return path.Base(Decode([]byte(f.Name)))
+// unreadableMember is the error for a zip member that was found by name but could not be read:
+// encrypted, corrupt or larger than maxZipMember.
+type unreadableMember struct{ Name string }
+
+func (e *unreadableMember) Error() string { return "zip: cannot read " + e.Name }
+
+// zipMember looks in the zip for the subtitle member whose base name is want (exactly, else
+// ignoring case) and decompresses only that one. subtitles counts the subtitle members seen,
+// so that a miss can be told from an archive without any. A member that is found but cannot be
+// read is an *unreadableMember error, not a miss.
+func zipMember(data []byte, want string) (hit *Entry, subtitles int, err error) {
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil, 0, err
 	}
-	return path.Base(f.Name)
+	var exact, fold *zip.File
+	for i, f := range zr.File {
+		if i >= maxZipEntries {
+			break
+		}
+		base, ok := zipSubBase(f)
+		if !ok {
+			continue
+		}
+		if f.UncompressedSize64 <= uint64(maxZipMember) {
+			subtitles++
+		}
+		switch {
+		case base == want && exact == nil:
+			exact = f
+		case strings.EqualFold(base, want) && fold == nil:
+			fold = f
+		}
+	}
+	if exact == nil {
+		exact = fold
+	}
+	if exact != nil {
+		base, _ := zipSubBase(exact)
+		var b []byte
+		if exact.UncompressedSize64 <= uint64(maxZipMember) {
+			b = zipRead(exact)
+		}
+		if b == nil {
+			return nil, subtitles, &unreadableMember{Name: base}
+		}
+		if len(b) > 0 {
+			hit = &Entry{Name: base, Data: b}
+		}
+	}
+	return hit, subtitles, nil
+}
+
+// zipSubName returns the member's base name and whether it is a subtitle worth reading: a
+// subtitle extension, not __MACOSX junk or a dot file, not declared larger than maxZipMember.
+// Member names are CP437 unless the UTF-8 flag is set; Chinese archives are usually GBK. Archives
+// made on Windows may separate directories with a backslash.
+func zipSubName(f *zip.File) (string, bool) {
+	base, ok := zipSubBase(f)
+	return base, ok && f.UncompressedSize64 <= uint64(maxZipMember)
+}
+
+// zipSubBase is zipSubName without the size check.
+func zipSubBase(f *zip.File) (string, bool) {
+	name := f.Name
+	if f.NonUTF8 {
+		name = Decode([]byte(name))
+	}
+	name = strings.ReplaceAll(name, "\\", "/")
+	base := path.Base(name)
+	return base, IsSubtitleName(base) && !strings.HasPrefix(name, "__MACOSX") && !strings.HasPrefix(base, ".")
+}
+
+// zipRead decompresses a member; nil if it cannot be read or turns out larger than maxZipMember
+// (the declared size may lie), rather than a truncated subtitle.
+func zipRead(f *zip.File) []byte {
+	rc, err := f.Open()
+	if err != nil {
+		return nil
+	}
+	defer rc.Close()
+	b, err := io.ReadAll(io.LimitReader(rc, maxZipMember+1))
+	if err != nil || int64(len(b)) > maxZipMember {
+		return nil
+	}
+	return b
 }
 
 // Lang tags recognised in file names and ASSRT langlist keys, in display order.

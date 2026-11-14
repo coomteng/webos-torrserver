@@ -97,7 +97,8 @@ Magic Remote: hover focuses, click activates, wheel scrolls / seeks, click on th
   the first goes to the bottom, the second to the top of the screen — e.g. 简中 + 英文 for language learning; 交换上下 swaps
   them), an online search (assrt.net / 射手网伪, query derived from the release name) and a delay adjuster. The sidecar downloads
   the chosen file, decodes GBK/Big5/UTF-16, converts SRT/ASS (and zips of them) to WebVTT and keeps it under
-  `TORR_SUBS_DIR/<hash>/<index>/`; the TV fetches the `.vtt` and draws cues itself (no `<track>`: unreliable on the
+  `TORR_SUBS_DIR/<hash>/<index>/`. When assrt.net's per-file link answers with an error, the file is taken from the
+  package's archive instead (zip only; rar and 7z packages are reported as unsupported). The TV fetches the `.vtt` and draws cues itself (no `<track>`: unreliable on the
   webOS video plane, and we want delay + bilingual stacking). The phone page has a 字幕 button per file for the same
   search plus uploading a local `.srt/.ass/.zip`; the TV loads it immediately if it is playing that file. The choice
   (or "off") and the delay are remembered per file in `localStorage` (`torr.sub.<hash>`). Needs `ASSRT_TOKEN`
