@@ -13,7 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/nwaples/rardecode/v2"
+	"github.com/coomteng/webos-torrserver/sidecar/internal/rardecode"
 )
 
 // Entry is one subtitle file, either standalone or taken out of a zip or rar.
@@ -35,6 +35,8 @@ var (
 	maxZipMember    int64 = 2 << 20  // one member, decompressed
 	maxZipTotal     int64 = 32 << 20 // all members kept, decompressed
 	maxRarDict      int64 = 32 << 20 // RAR 5 decompression window (WinRAR 5's default)
+	maxRar4Dict     int64 = 4 << 20  // RAR 1.5-4.x decompression window (the largest that format has)
+	maxRarPPMdMB          = 32       // RAR 2.9-4.x PPMd model; rar's own -m3/-m4/-m5 ask for 15/20/25
 	rarTimeout            = 10 * time.Second
 )
 
@@ -207,8 +209,9 @@ var (
 	errRarTimeout = errors.New("rar: took too long")
 	errRarBusy    = errors.New("rar: another archive is being read")
 	errRarVersion = errors.New("rar: unknown version")
-	// errRarOld is a RAR 1.5-4.x archive with a compressed member, which is not decoded.
-	errRarOld = errors.New("rar: old format, compressed")
+	// errRarOld is a RAR 2.9-4.x member packed with a PPMd model larger than maxRarPPMdMB.
+	errRarOld  = errors.New("rar: old format, asks for too much memory")
+	errRarSize = errors.New("rar: member with a negative size")
 )
 
 // rarVersion tells the format by the signature at the very start of the data: 5 for RAR 5 and 7,
@@ -251,10 +254,11 @@ func (in *rarInput) Read(p []byte) (int, error) {
 // RAR 4 names stored without the Unicode flag, which are the bytes as archived (the library has
 // already turned every 0x5C in them into a slash, also the second byte of a GBK or Big5 character).
 //
-// RAR 5 and 7 are read whole, with a window of at most maxRarDict. Of RAR 1.5 to 4.x only stored
-// members are read and a compressed one ends the walk with errRarOld: such a member may switch
-// to the PPMd coder in any block of its data, and the archive sizes that coder's model (up to
-// 256 MB, which this decoder holds in several times as much memory) with nothing to limit it.
+// RAR 5 and 7 are read with a window of at most maxRarDict, RAR 1.5 to 4.x with one of at most
+// maxRar4Dict. A RAR 2.9-4.x member may switch to the PPMd coder in any block of its data and
+// that block says how large a model to allocate (up to 256 MB): one that asks for more than
+// maxRarPPMdMB cannot be read, and the walk, which goes on to the members after it, ends with
+// errRarOld. (The limit is the one change made to the copy of the library in internal/rardecode.)
 //
 // Encrypted headers, a volume that continues elsewhere, corrupt data, an archive that breaks off,
 // running out of rarTimeout and ctx ending while another rar is being read are errors too.
@@ -264,7 +268,7 @@ func rarWalk(ctx context.Context, data []byte, visit func(h *rardecode.FileHeade
 	case 0:
 		return errRarVersion
 	case 4:
-		dict = -1 // smaller than any window: the library refuses a compressed member before it sets up a decoder
+		dict = maxRar4Dict
 	}
 	select {
 	case rarSem <- struct{}{}:
@@ -272,14 +276,18 @@ func rarWalk(ctx context.Context, data []byte, visit func(h *rardecode.FileHeade
 	case <-ctx.Done():
 		return errRarBusy
 	}
+	tooBig := false // a member asked for a PPMd model over the limit
 	defer func() {
-		if recover() != nil { // the decoder is fed bytes from the network
+		switch {
+		case recover() != nil: // the decoder is fed bytes from the network
 			err = errors.New("rar: corrupt archive")
+		case tooBig && (err == nil || errors.Is(err, rardecode.ErrPPMdMemoryTooLarge)):
+			err = errRarOld
 		}
 	}()
 	in := &rarInput{Reader: bytes.NewReader(data), deadline: time.Now().Add(rarTimeout)}
 	// a small read buffer, so that the deadline is looked at often
-	rr, err := rardecode.NewReader(in, rardecode.MaxDictionarySize(dict), rardecode.BufferSize(256))
+	rr, err := rardecode.NewReader(in, rardecode.MaxDictionarySize(dict), rardecode.MaxPPMdMemory(maxRarPPMdMB), rardecode.BufferSize(256))
 	if err != nil {
 		return err
 	}
@@ -295,21 +303,36 @@ func rarWalk(ctx context.Context, data []byte, visit func(h *rardecode.FileHeade
 			return io.ErrUnexpectedEOF
 		case err == io.EOF:
 			return nil
-		case ver == 4 && errors.Is(err, rardecode.ErrDictionaryTooLarge):
-			return errRarOld
+		case errors.Is(err, rardecode.ErrPPMdMemoryTooLarge): // met while skipping, in a solid archive
+			tooBig = true
+			return err
 		case err != nil:
 			return err
 		}
 		if ver == 4 && h.UnPackedSize < 0 && !h.UnKnownSize {
 			// the library takes a declared size for the window if that is smaller, without
-			// minding the sign: such a member would get past the limit above
-			return errRarOld
+			// minding the sign
+			return errRarSize
 		}
-		if !h.IsDir && !visit(h, rr) {
+		if !h.IsDir && !visit(h, &ppmdSpy{rr, &tooBig}) {
 			return nil
 		}
 	}
 	return nil
+}
+
+// ppmdSpy notes a member that fails for asking for too large a PPMd model.
+type ppmdSpy struct {
+	r      io.Reader
+	tooBig *bool
+}
+
+func (s *ppmdSpy) Read(p []byte) (int, error) {
+	n, err := s.r.Read(p)
+	if errors.Is(err, rardecode.ErrPPMdMemoryTooLarge) {
+		*s.tooBig = true
+	}
+	return n, err
 }
 
 // rarFits reports whether the member does not declare more than maxZipMember bytes.
@@ -353,6 +376,8 @@ func rarMember(ctx context.Context, data []byte, want string) (hit *Entry, subti
 	})
 	switch {
 	case fold == nil:
+		return nil, subtitles, err
+	case fold.Data == nil && err == errRarOld:
 		return nil, subtitles, err
 	case fold.Data == nil:
 		return nil, subtitles, &unreadableMember{Name: fold.Name}

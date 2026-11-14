@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nwaples/rardecode/v2"
+	"github.com/coomteng/webos-torrserver/sidecar/internal/rardecode"
 	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
@@ -457,38 +457,83 @@ func readAllRar(z []byte) (n int, err error) {
 	return n, err
 }
 
-// RAR 5 is read whole; of RAR 1.5 to 4.x only stored members: its packed members may select the
-// PPMd coder, whose model the archive sizes (up to 256 MB, several times that in this decoder).
+// RAR 1.5 to 4.x is read too, packed members included. Such a member may select the PPMd coder,
+// whose model the archive sizes (up to 256 MB): one that asks for more than maxRarPPMdMB is not
+// decoded and nothing is allocated for it.
 func TestRarOldFormat(t *testing.T) {
 	const pre = "assrt: per-file download failed (HTTP 493) and "
-	const old = pre + "the archive is an old-format rar (RAR4, compressed), which is not supported: pack.rar"
+	const old = pre + "the archive is an old-format rar that needs too much memory to unpack: pack.rar"
 	download := func(t *testing.T, body []byte, name string) ([]byte, error) {
 		t.Helper()
 		srv, _ := fallbackCDN(t, 493, serveBytes(body))
 		return newTestASSRT(srv, "tok").Download(context.Background(), fallbackFile(srv.URL, name, "pack.rar"))
 	}
-	// nothing of the archive is decoded: the walk fails at the member and allocates next to nothing
-	refused := func(t *testing.T, z []byte) {
+	// no member of the archive can be read, and trying allocates next to nothing
+	refused := func(t *testing.T, z []byte, member string) {
 		t.Helper()
-		var n int
+		var read int
 		var err error
-		got := allocated(func() { n, err = readAllRar(z) })
-		if err != errRarOld || n != 0 || got > 8<<20 {
-			t.Fatalf("walk: %d members read, err=%v, %d KB allocated", n, err, got>>10)
+		got := allocated(func() {
+			err = rarWalk(context.Background(), z, func(h *rardecode.FileHeader, r io.Reader) bool {
+				read += len(rarRead(h, r))
+				return true
+			})
+		})
+		if err != errRarOld || read != 0 || got > 8<<20 {
+			t.Fatalf("walk: %d bytes read, err=%v, %d KB allocated", read, err, got>>10)
 		}
 		t.Logf("walk allocated %d KB", got>>10)
 		var es []Entry
 		if got := allocated(func() { es = Expand("pack.rar", z) }); len(es) != 1 || es[0].Name != "pack.rar" || got > 8<<20 {
 			t.Fatalf("expanded %v, %d KB allocated", names(es), got>>10)
 		}
-		if _, err := download(t, z, "x.srt"); err == nil || err.Error() != old {
-			t.Fatalf("got %v, want %q", err, old)
+		if _, err := download(t, z, member); err == nil || err.Error() != old {
+			t.Fatalf("%s: got %v, want %q", member, err, old)
+		}
+		// a file that is not in the archive: members are not opened to look for a name, so the
+		// archive is handed on whole, for Expand to find nothing in (above)
+		if data, err := download(t, z, "absent.srt"); err != nil || !bytes.Equal(data, z) {
+			t.Fatalf("absent.srt: err=%v, %d bytes", err, len(data))
 		}
 	}
+	// the three members of the fixtures written by rar
+	const fixNames = "Show.S01E02.chs.srt Show.S01E01.chs.srt Show.S01E03.chs.srt"
+	want := Expand("pack.rar", fixture(t, "rar4_stored.rar"))
+	if got := strings.Join(names(want), " "); got != fixNames || !strings.Contains(string(want[2].Data), "episode 3 episode 3") {
+		t.Fatalf("stored fixture expanded to %q", got)
+	}
+	// every member is read, to the same bytes as the stored fixture has, within maxAlloc
+	reads := func(t *testing.T, z []byte, maxAlloc uint64) {
+		t.Helper()
+		var es []Entry
+		got := allocated(func() { es = Expand("pack.rar", z) })
+		if strings.Join(names(es), " ") != fixNames {
+			t.Fatalf("expanded %v", names(es))
+		}
+		for i := range es {
+			if !bytes.Equal(es[i].Data, want[i].Data) {
+				t.Fatalf("%s: got %q", es[i].Name, es[i].Data)
+			}
+		}
+		if got > maxAlloc {
+			t.Fatalf("allocated %d MB, over %d MB", got>>20, maxAlloc>>20)
+		}
+		t.Logf("allocated %d KB", got>>10)
+		if data, err := download(t, z, "Show.S01E03.chs.srt"); err != nil || !bytes.Equal(data, want[2].Data) {
+			t.Fatalf("download err=%v data=%q", err, data)
+		}
+	}
+	if maxRarPPMdMB != 32 || maxRar4Dict != 4<<20 {
+		t.Fatalf("maxRarPPMdMB is %d, maxRar4Dict %d MB", maxRarPPMdMB, maxRar4Dict>>20)
+	}
 	t.Run("ppmd largest model", func(t *testing.T) {
-		refused(t, rar4Arc(rar4Member("x.srt", 0x33, 4096, false, ppmdMax)))
+		refused(t, rar4Arc(rar4Member("x.srt", 0x33, 4096, false, ppmdMax)), "x.srt")
 	})
-	// sizes the window check of the library does not catch
+	t.Run("ppmd one over the limit", func(t *testing.T) {
+		over := append([]byte{0x80 | 0x20 | 2, byte(maxRarPPMdMB)}, make([]byte, 30)...) // the byte is megabytes less one
+		refused(t, rar4Arc(rar4Member("x.srt", 0x33, 4096, false, over)), "x.srt")
+	})
+	// a negative size is refused before the member is opened
 	for _, unp := range []int64{-2, -1 << 63, -1 << 32} {
 		t.Run("ppmd negative size", func(t *testing.T) {
 			z := rar4Arc(rar4Member("x.srt", 0x33, unp, true, ppmdMax))
@@ -500,34 +545,32 @@ func TestRarOldFormat(t *testing.T) {
 		})
 	}
 	t.Run("ppmd size unknown", func(t *testing.T) {
-		refused(t, rar4Arc(rar4Member("x.srt", 0x33, -1, false, ppmdMax)))
+		refused(t, rar4Arc(rar4Member("x.srt", 0x33, -1, false, ppmdMax)), "x.srt")
 	})
-	t.Run("ppmd by rar", func(t *testing.T) { refused(t, fixture(t, "rar4_ppmd.rar")) })
-	t.Run("lz by rar", func(t *testing.T) { refused(t, fixture(t, "rar4_lz.rar")) })
-	t.Run("stored by rar", func(t *testing.T) {
-		z := fixture(t, "rar4_stored.rar")
-		es := Expand("pack.rar", z)
-		if got := strings.Join(names(es), " "); got != "Show.S01E02.chs.srt Show.S01E01.chs.srt Show.S01E03.chs.srt" || !strings.Contains(string(es[2].Data), "episode 3 episode 3") {
-			t.Fatalf("expanded %q", got)
-		}
-		if data, err := download(t, z, "Show.S01E03.chs.srt"); err != nil || !bytes.Equal(data, es[2].Data) {
-			t.Fatalf("download err=%v data=%q", err, data)
-		}
-	})
-	// stored members in front of a packed one are read; the packed one and what follows it are not
-	t.Run("stored then packed", func(t *testing.T) {
+	t.Run("ppmd 256 MB by rar", func(t *testing.T) { refused(t, fixture(t, "rar4_ppmd.rar"), "Show.S01E03.chs.srt") })
+	// what rar writes for text with -m5: a 25 MB model, which the decoder holds in about 1.4 times that
+	t.Run("ppmd 25 MB by rar", func(t *testing.T) { reads(t, fixture(t, "rar4_ppmd_text.rar"), 48<<20) })
+	t.Run("lz by rar", func(t *testing.T) { reads(t, fixture(t, "rar4_lz.rar"), 8<<20) })
+	t.Run("stored by rar", func(t *testing.T) { reads(t, fixture(t, "rar4_stored.rar"), 8<<20) })
+	// a member that asks for too much is passed over: those around it are read, and it is the
+	// reason given when the wanted file is that one
+	t.Run("too large among others", func(t *testing.T) {
 		z := rar4Arc(rar4Member("a.srt", 0x30, int64(len(srtEng)), false, []byte(srtEng)), rar4Member("x.srt", 0x33, 4096, false, ppmdMax),
 			rar4Member("c.srt", 0x30, int64(len(srtE2)), false, []byte(srtE2)))
-		if data, err := download(t, z, "a.srt"); err != nil || string(data) != srtEng {
-			t.Fatalf("stored member: err=%v data=%q", err, data)
-		}
-		for _, n := range []string{"x.srt", "c.srt", "absent.srt"} {
-			if _, err := download(t, z, n); err == nil || err.Error() != old {
-				t.Fatalf("%s: got %v, want %q", n, err, old)
+		for n, want := range map[string]string{"a.srt": srtEng, "c.srt": srtE2} {
+			if data, err := download(t, z, n); err != nil || string(data) != want {
+				t.Fatalf("%s: err=%v data=%q", n, err, data)
 			}
 		}
-		if got := strings.Join(names(Expand("pack.rar", z)), " "); got != "a.srt" {
-			t.Fatalf("expanded %q", got)
+		if _, err := download(t, z, "x.srt"); err == nil || err.Error() != old {
+			t.Fatalf("x.srt: got %v, want %q", err, old)
+		}
+		if data, err := download(t, z, "absent.srt"); err != nil || !bytes.Equal(data, z) {
+			t.Fatalf("absent.srt: err=%v, %d bytes", err, len(data))
+		}
+		var es []Entry
+		if got := allocated(func() { es = Expand("pack.rar", z) }); strings.Join(names(es), " ") != "a.srt c.srt" || got > 8<<20 {
+			t.Fatalf("expanded %q, %d KB allocated", names(es), got>>10)
 		}
 	})
 	// only a signature at the very start counts: the library would look for one further on

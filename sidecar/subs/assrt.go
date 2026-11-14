@@ -330,7 +330,7 @@ func (a *ASSRT) fromArchive(ctx context.Context, f File, status int) ([]byte, er
 		case errors.As(err, &um): // do not hand on the whole archive: another member would be picked
 			return fail(" and %s in the archive could not be read", msgName(um.Name))
 		case err == errRarOld:
-			return fail(" and the archive is an old-format rar (RAR4, compressed), which is not supported: %s", name)
+			return fail(" and the archive is an old-format rar that needs too much memory to unpack: %s", name)
 		case err == errRarBusy:
 			return fail(" and the archive %s could not be read in time", name)
 		case err != nil:
