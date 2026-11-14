@@ -9,6 +9,7 @@ import (
 	"hash/crc32"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -21,8 +22,9 @@ import (
 // after the published format notes, and checked against the library in TestRarBuilders.
 type rarMem struct {
 	name, data string
-	enc        bool // marked encrypted: unreadable without a password
-	unknown    bool // unpacked size not declared
+	enc        bool   // marked encrypted: unreadable without a password
+	unknown    bool   // unpacked size not declared
+	comp       uint64 // RAR5 compression information; 0 is stored
 }
 
 func rarPairs(pairs ...string) []rarMem {
@@ -63,7 +65,7 @@ func makeRar5(arcFlags, endFlags uint64, ms ...rarMem) []byte {
 		b = binary.AppendUvarint(b, size)
 		b = binary.AppendUvarint(b, 0x20) // attributes
 		b = binary.LittleEndian.AppendUint32(b, crc32.ChecksumIEEE([]byte(m.data)))
-		b = append(b, 0, 1) // stored; host OS unix
+		b = append(binary.AppendUvarint(b, m.comp), 1) // compression information; host OS unix
 		b = binary.AppendUvarint(b, uint64(len(m.name)))
 		b = append(append(b, m.name...), extra...)
 		out = append(append(out, rar5Block(b)...), m.data...)
@@ -159,7 +161,7 @@ func TestRarFixtures(t *testing.T) {
 		t.Fatal(err)
 	}
 	sizes := map[string]int{}
-	err = rarWalk(sample, func(h *rardecode.FileHeader, r io.Reader) bool {
+	err = rarWalk(context.Background(), sample, func(h *rardecode.FileHeader, r io.Reader) bool {
 		b, err := io.ReadAll(r)
 		if link := h.LinkType != rardecode.LinkTypeNone; link != (err != nil) || link != (rarRead(h, r) == nil) {
 			t.Fatalf("%s: link type %d, err=%v", h.Name, h.LinkType, err)
@@ -253,7 +255,7 @@ func TestRarLimits(t *testing.T) {
 			if got := strings.Join(names(Expand("pack.rar", z)), " "); got != "a.srt b.srt c.srt" {
 				t.Fatalf("expanded %q", got)
 			}
-			if hit, n, err := rarMember(z, "e.srt"); hit != nil || n != 3 || err != nil {
+			if hit, n, err := rarMember(context.Background(), z, "e.srt"); hit != nil || n != 3 || err != nil {
 				t.Fatalf("rarMember past the cap: hit=%v subtitles=%d err=%v", hit, n, err)
 			}
 		})
@@ -267,7 +269,7 @@ func TestRarLimits(t *testing.T) {
 				t.Fatalf("expanded %v", names(es))
 			}
 			for _, n := range []string{"big.srt", "lying.srt"} {
-				hit, subtitles, err := rarMember(z, n)
+				hit, subtitles, err := rarMember(context.Background(), z, n)
 				if hit != nil {
 					t.Fatalf("rarMember returned %d bytes of oversize %s", len(hit.Data), n)
 				}
@@ -276,10 +278,10 @@ func TestRarLimits(t *testing.T) {
 					t.Fatalf("rarMember oversize %s: subtitles=%d err=%v", n, subtitles, err)
 				}
 			}
-			if hit, n, err := rarMember(z, "absent.srt"); hit != nil || n != 3 || err != nil {
+			if hit, n, err := rarMember(context.Background(), z, "absent.srt"); hit != nil || n != 3 || err != nil {
 				t.Fatalf("rarMember miss: hit=%v subtitles=%d err=%v", hit, n, err)
 			}
-			if hit, _, err := rarMember(z, "SMALL.srt"); err != nil || hit == nil || hit.Name != "small.srt" || string(hit.Data) != cue {
+			if hit, _, err := rarMember(context.Background(), z, "SMALL.srt"); err != nil || hit == nil || hit.Name != "small.srt" || string(hit.Data) != cue {
 				t.Fatalf("rarMember small: hit=%v err=%v", hit, err)
 			}
 		})
@@ -375,7 +377,7 @@ func TestRarUnreadable(t *testing.T) {
 		maxRarDict = 1 << 10 // below the library's minimum window: no compressed member can be opened
 		t.Cleanup(func() { maxRarDict = old })
 		sample, _ := os.ReadFile("testdata/sample.rar")
-		if err := rarWalk(sample, func(*rardecode.FileHeader, io.Reader) bool { return true }); err == nil {
+		if err := rarWalk(context.Background(), sample, func(*rardecode.FileHeader, io.Reader) bool { return true }); err == nil {
 			t.Fatal("a member needing a larger window than allowed was opened")
 		}
 	})
@@ -389,8 +391,8 @@ func TestRarUnreadable(t *testing.T) {
 				flipped[i] ^= 0x5a
 				for _, d := range [][]byte{z[:i], flipped} {
 					Expand("pack.rar", d)
-					rarMember(d, "x.eng.srt")
-					rarWalk(d, func(_ *rardecode.FileHeader, r io.Reader) bool {
+					rarMember(context.Background(), d, "x.eng.srt")
+					rarWalk(context.Background(), d, func(_ *rardecode.FileHeader, r io.Reader) bool {
 						io.Copy(io.Discard, io.LimitReader(r, 1<<20))
 						return true
 					})
@@ -398,4 +400,268 @@ func TestRarUnreadable(t *testing.T) {
 			}
 		}
 	})
+}
+
+// rar4Member is one file of a RAR 4.x archive as the RAR 3 packer would write it: method 0x30 is
+// stored, 0x33 packed. large writes the 64-bit form of the sizes.
+func rar4Member(name string, method byte, unp int64, large bool, packed []byte) []byte {
+	flags := uint16(0x8000)
+	b := binary.LittleEndian.AppendUint32(nil, uint32(len(packed)))
+	b = binary.LittleEndian.AppendUint32(b, uint32(unp))
+	b = append(b, 2)
+	b = binary.LittleEndian.AppendUint32(b, crc32.ChecksumIEEE(packed))
+	b = binary.LittleEndian.AppendUint32(b, 0x5a8e3b20)
+	b = append(b, 29, method)
+	b = binary.LittleEndian.AppendUint16(b, uint16(len(name)))
+	b = binary.LittleEndian.AppendUint32(b, 0x20)
+	if large {
+		flags |= 0x100
+		b = binary.LittleEndian.AppendUint32(binary.LittleEndian.AppendUint32(b, 0), uint32(unp>>32))
+	}
+	return append(rar4Block(0x74, flags, append(b, name...)), packed...)
+}
+
+// rar4Arc puts members between the RAR 4.x signature, archive header and end block.
+func rar4Arc(members ...[]byte) []byte {
+	out := append([]byte("Rar!\x1a\x07\x00"), rar4Block(0x73, 0, make([]byte, 6))...)
+	return append(append(out, bytes.Join(members, nil)...), rar4Block(0x7b, 0x4000, nil)...)
+}
+
+// ppmdMax opens a RAR 3 packed stream with a PPMd block that asks for the largest model, 256 MB.
+var ppmdMax = append([]byte{0x80 | 0x20 | 2, 0xff}, make([]byte, 30)...)
+
+// allocated is what f allocated, in bytes.
+func allocated(f func()) uint64 {
+	var a, b runtime.MemStats
+	runtime.ReadMemStats(&a)
+	f()
+	runtime.ReadMemStats(&b)
+	return b.TotalAlloc - a.TotalAlloc
+}
+
+func fixture(t *testing.T, name string) []byte {
+	t.Helper()
+	b, err := os.ReadFile("testdata/" + name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func readAllRar(z []byte) (n int, err error) {
+	err = rarWalk(context.Background(), z, func(_ *rardecode.FileHeader, r io.Reader) bool {
+		io.Copy(io.Discard, io.LimitReader(r, 1<<20))
+		n++
+		return true
+	})
+	return n, err
+}
+
+// RAR 5 is read whole; of RAR 1.5 to 4.x only stored members: its packed members may select the
+// PPMd coder, whose model the archive sizes (up to 256 MB, several times that in this decoder).
+func TestRarOldFormat(t *testing.T) {
+	const pre = "assrt: per-file download failed (HTTP 493) and "
+	const old = pre + "the archive is an old-format rar (RAR4, compressed), which is not supported: pack.rar"
+	download := func(t *testing.T, body []byte, name string) ([]byte, error) {
+		t.Helper()
+		srv, _ := fallbackCDN(t, 493, serveBytes(body))
+		return newTestASSRT(srv, "tok").Download(context.Background(), fallbackFile(srv.URL, name, "pack.rar"))
+	}
+	// nothing of the archive is decoded: the walk fails at the member and allocates next to nothing
+	refused := func(t *testing.T, z []byte) {
+		t.Helper()
+		var n int
+		var err error
+		got := allocated(func() { n, err = readAllRar(z) })
+		if err != errRarOld || n != 0 || got > 8<<20 {
+			t.Fatalf("walk: %d members read, err=%v, %d KB allocated", n, err, got>>10)
+		}
+		t.Logf("walk allocated %d KB", got>>10)
+		var es []Entry
+		if got := allocated(func() { es = Expand("pack.rar", z) }); len(es) != 1 || es[0].Name != "pack.rar" || got > 8<<20 {
+			t.Fatalf("expanded %v, %d KB allocated", names(es), got>>10)
+		}
+		if _, err := download(t, z, "x.srt"); err == nil || err.Error() != old {
+			t.Fatalf("got %v, want %q", err, old)
+		}
+	}
+	t.Run("ppmd largest model", func(t *testing.T) {
+		refused(t, rar4Arc(rar4Member("x.srt", 0x33, 4096, false, ppmdMax)))
+	})
+	// sizes the window check of the library does not catch
+	for _, unp := range []int64{-2, -1 << 63, -1 << 32} {
+		t.Run("ppmd negative size", func(t *testing.T) {
+			z := rar4Arc(rar4Member("x.srt", 0x33, unp, true, ppmdMax))
+			var n int
+			var err error
+			if got := allocated(func() { n, err = readAllRar(z); Expand("pack.rar", z); rarMember(context.Background(), z, "x.srt") }); err == nil || n != 0 || got > 8<<20 {
+				t.Fatalf("size %d: %d members read, err=%v, %d KB allocated", unp, n, err, got>>10)
+			}
+		})
+	}
+	t.Run("ppmd size unknown", func(t *testing.T) {
+		refused(t, rar4Arc(rar4Member("x.srt", 0x33, -1, false, ppmdMax)))
+	})
+	t.Run("ppmd by rar", func(t *testing.T) { refused(t, fixture(t, "rar4_ppmd.rar")) })
+	t.Run("lz by rar", func(t *testing.T) { refused(t, fixture(t, "rar4_lz.rar")) })
+	t.Run("stored by rar", func(t *testing.T) {
+		z := fixture(t, "rar4_stored.rar")
+		es := Expand("pack.rar", z)
+		if got := strings.Join(names(es), " "); got != "Show.S01E02.chs.srt Show.S01E01.chs.srt Show.S01E03.chs.srt" || !strings.Contains(string(es[2].Data), "episode 3 episode 3") {
+			t.Fatalf("expanded %q", got)
+		}
+		if data, err := download(t, z, "Show.S01E03.chs.srt"); err != nil || !bytes.Equal(data, es[2].Data) {
+			t.Fatalf("download err=%v data=%q", err, data)
+		}
+	})
+	// stored members in front of a packed one are read; the packed one and what follows it are not
+	t.Run("stored then packed", func(t *testing.T) {
+		z := rar4Arc(rar4Member("a.srt", 0x30, int64(len(srtEng)), false, []byte(srtEng)), rar4Member("x.srt", 0x33, 4096, false, ppmdMax),
+			rar4Member("c.srt", 0x30, int64(len(srtE2)), false, []byte(srtE2)))
+		if data, err := download(t, z, "a.srt"); err != nil || string(data) != srtEng {
+			t.Fatalf("stored member: err=%v data=%q", err, data)
+		}
+		for _, n := range []string{"x.srt", "c.srt", "absent.srt"} {
+			if _, err := download(t, z, n); err == nil || err.Error() != old {
+				t.Fatalf("%s: got %v, want %q", n, err, old)
+			}
+		}
+		if got := strings.Join(names(Expand("pack.rar", z)), " "); got != "a.srt" {
+			t.Fatalf("expanded %q", got)
+		}
+	})
+	// only a signature at the very start counts: the library would look for one further on
+	t.Run("unknown version", func(t *testing.T) {
+		for _, sig := range []string{"Rar!\x1a\x07\x01\x01junk", "Rar!\x1a\x07\x02\x00", "Rar!\x1a\x07\x01", "Rar!\x1a\x07"} {
+			z := append([]byte(sig), packRar()...)
+			if n, err := readAllRar(z); err == nil || err.Error() != "rar: unknown version" || n != 0 {
+				t.Fatalf("%q: %d members read, err=%v", sig, n, err)
+			}
+			if es := Expand("pack.rar", z); len(es) != 1 || es[0].Name != "pack.rar" {
+				t.Fatalf("%q: expanded %v", sig, names(es))
+			}
+			if _, err := download(t, z, "Show.S01E01.eng.srt"); err == nil || err.Error() != pre+"the archive pack.rar could not be read" {
+				t.Fatalf("%q: %v", sig, err)
+			}
+		}
+	})
+	t.Run("rar5 packed", func(t *testing.T) {
+		sizes := map[string]int{}
+		err := rarWalk(context.Background(), fixture(t, "sample.rar"), func(h *rardecode.FileHeader, r io.Reader) bool {
+			sizes[h.Name] = len(rarRead(h, r))
+			return true
+		})
+		if err != nil || sizes["testdata/already-compressed.jpg"] != 8944 || sizes["testdata/proverbs/proverb1.txt"] != 54 {
+			t.Fatalf("sample.rar: err=%v sizes=%v", err, sizes)
+		}
+	})
+}
+
+// A RAR 4 archive that breaks off is not taken for a shorter one: the library reports running out
+// of data between two blocks, or while skipping a member, as the end of the archive.
+func TestRarCutShort(t *testing.T) {
+	const want = "assrt: per-file download failed (HTTP 493) and the archive pack.rar could not be read"
+	z := fixture(t, "rar4_stored.rar")
+	second := bytes.Index(z, []byte("Show.S01E01.chs.srt"))
+	third := bytes.Index(z, []byte("Show.S01E03.chs.srt")) - 32 // where the third member's header starts
+	noEnd := makeRar4(rarPairs("a.srt", srtEng, "b.srt", srtE2)...)
+	for title, cut := range map[string][]byte{
+		"inside a member":         z[:second+60],
+		"between members":         z[:third],
+		"before the end block":    z[:len(z)-7],
+		"hand-made, no end block": noEnd[:len(noEnd)-7],
+	} {
+		t.Run(title, func(t *testing.T) {
+			if err := rarWalk(context.Background(), cut, func(*rardecode.FileHeader, io.Reader) bool { return true }); err == nil {
+				t.Fatal("walked to the end of an archive without one")
+			}
+			// a member that is not in front of the break is not there: no other one is picked for it
+			srv, _ := fallbackCDN(t, 493, serveBytes(cut))
+			for _, n := range []string{"Show.S01E03.chs.srt", "Show.S01E04.chs.srt"} {
+				if n == "Show.S01E03.chs.srt" && strings.Contains(title, "end block") {
+					continue // whole, only the end block is missing
+				}
+				data, err := newTestASSRT(srv, "tok").Download(context.Background(), fallbackFile(srv.URL, n, "pack.rar"))
+				if err == nil || err.Error() != want {
+					t.Fatalf("%s: got %d bytes, err=%v; want %q", n, len(data), err, want)
+				}
+			}
+			// a member in front of the break is still found by name
+			first := "Show.S01E02.chs.srt"
+			if strings.HasPrefix(title, "hand-made") {
+				first = "a.srt"
+			}
+			if hit, _, err := rarMember(context.Background(), cut, first); err != nil || hit == nil || hit.Name != first {
+				t.Fatalf("%s: hit=%v err=%v", first, hit, err)
+			}
+		})
+	}
+	if err := rarWalk(context.Background(), z, func(*rardecode.FileHeader, io.Reader) bool { return true }); err != nil {
+		t.Fatalf("whole archive: %v", err)
+	}
+	// bytes after the end block do not matter
+	if es := Expand("pack.rar", append(append([]byte{}, z...), "trailing"...)); len(es) != 3 {
+		t.Fatalf("trailing bytes: expanded %v", names(es))
+	}
+}
+
+// The window a RAR 5 member may ask for: 32 MB, WinRAR 5's default, and no more.
+func TestRarWindowCap(t *testing.T) {
+	if maxRarDict != 32<<20 {
+		t.Fatalf("maxRarDict is %d MB", maxRarDict>>20)
+	}
+	for mb, ok := range map[uint64]bool{32: true, 64: false} {
+		bits := uint64(8) // 128 KB << 8 is 32 MB
+		if mb == 64 {
+			bits = 9
+		}
+		opened := 0
+		err := rarWalk(context.Background(), makeRar5(0, 0, rarMem{name: "x.srt", data: "xxxx", unknown: true, comp: 1<<7 | bits<<10}), func(*rardecode.FileHeader, io.Reader) bool {
+			opened++
+			return true
+		})
+		if (opened == 1) != ok || (err == nil) != ok {
+			t.Fatalf("%d MB window: opened=%d err=%v", mb, opened, err)
+		}
+	}
+}
+
+// holdRar takes the place of a rar that is being decoded until the returned function is called.
+func holdRar() (release func()) {
+	rarSem <- struct{}{}
+	return func() { <-rarSem }
+}
+
+// Waiting for another rar to be done ends with the request.
+func TestRarWaitEndsWithRequest(t *testing.T) {
+	release := holdRar()
+	var once bool
+	defer func() {
+		if !once {
+			release()
+		}
+	}()
+	srv, _ := fallbackCDN(t, 493, serveBytes(packRar()))
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := newTestASSRT(srv, "tok").Download(ctx, fallbackFile(srv.URL, "Show.S01E01.eng.srt", "pack.rar"))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if want := "assrt: per-file download failed (HTTP 493) and the archive pack.rar could not be read in time"; err == nil || err.Error() != want {
+			t.Fatalf("got %v, want %q", err, want)
+		}
+	case <-time.After(3 * time.Second):
+		release()
+		once = true
+		t.Fatalf("still waiting for the other rar 2.7 s after the request ended (then: %v)", <-done)
+	}
+	release()
+	once = true
+	if data, err := newTestASSRT(srv, "tok").Download(context.Background(), fallbackFile(srv.URL, "Show.S01E01.eng.srt", "pack.rar")); err != nil || string(data) != srtEng {
+		t.Fatalf("after the other rar was done: err=%v data=%q", err, data)
+	}
 }

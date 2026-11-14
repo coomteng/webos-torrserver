@@ -318,15 +318,21 @@ func (a *ASSRT) fromArchive(ctx context.Context, f File, status int) ([]byte, er
 	}
 	switch kind := archiveKind(data); kind {
 	case "zip", "rar":
-		member := zipMember
+		var hit *Entry
+		var subtitles int
 		if kind == "rar" {
-			member = rarMember
+			hit, subtitles, err = rarMember(ctx, data, f.Name)
+		} else {
+			hit, subtitles, err = zipMember(data, f.Name)
 		}
-		hit, subtitles, err := member(data, f.Name)
 		var um *unreadableMember
 		switch {
 		case errors.As(err, &um): // do not hand on the whole archive: another member would be picked
 			return fail(" and %s in the archive could not be read", msgName(um.Name))
+		case err == errRarOld:
+			return fail(" and the archive is an old-format rar (RAR4, compressed), which is not supported: %s", name)
+		case err == errRarBusy:
+			return fail(" and the archive %s could not be read in time", name)
 		case err != nil:
 			return fail(" and the archive %s could not be read", name)
 		case hit != nil:

@@ -3,13 +3,13 @@ package subs
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"path"
 	"regexp"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -34,7 +34,7 @@ var (
 	maxZipEntries         = 2000     // members looked at
 	maxZipMember    int64 = 2 << 20  // one member, decompressed
 	maxZipTotal     int64 = 32 << 20 // all members kept, decompressed
-	maxRarDict      int64 = 64 << 20 // rar decompression window (WinRAR's default is 32 MB)
+	maxRarDict      int64 = 32 << 20 // RAR 5 decompression window (WinRAR 5's default)
 	rarTimeout            = 10 * time.Second
 )
 
@@ -43,7 +43,7 @@ func archiveKind(data []byte) string {
 	switch {
 	case bytes.HasPrefix(data, []byte("PK\x03\x04")):
 		return "zip"
-	case bytes.HasPrefix(data, []byte("Rar!\x1a\x07")):
+	case bytes.HasPrefix(data, []byte(rarSig)):
 		return "rar"
 	case bytes.HasPrefix(data, []byte("7z\xbc\xaf\x27\x1c")):
 		return "7z"
@@ -53,13 +53,15 @@ func archiveKind(data []byte) string {
 
 // Expand returns the subtitle files inside data: the file itself, or the .srt/.ass/.ssa/.vtt
 // members of a zip or rar (nested directories flattened, __MACOSX junk skipped). Members larger
-// than maxZipMember are skipped; it stops after maxZipEntries members or maxZipTotal bytes.
+// than maxZipMember are skipped; it stops after maxZipEntries members or maxZipTotal bytes. A rar
+// that cannot be read (see rarWalk) is returned as it is, like any other file. It waits for a rar
+// that is being read elsewhere.
 func Expand(name string, data []byte) []Entry {
 	switch archiveKind(data) {
 	case "rar":
 		var out []Entry
 		var total int64
-		err := rarWalk(data, func(h *rardecode.FileHeader, r io.Reader) bool {
+		err := rarWalk(context.Background(), data, func(h *rardecode.FileHeader, r io.Reader) bool {
 			base, ok := subBase(h.Name, !utf8.ValidString(h.Name))
 			if !ok {
 				return true
@@ -199,34 +201,77 @@ func zipRead(f *zip.File) []byte {
 	return b
 }
 
-var errRarTimeout = errors.New("rar: took too long")
+const rarSig = "Rar!\x1a\x07"
 
-// rarMu lets one rar be decoded at a time: a decoder may hold its window and model in memory.
-var rarMu sync.Mutex
+var (
+	errRarTimeout = errors.New("rar: took too long")
+	errRarBusy    = errors.New("rar: another archive is being read")
+	errRarVersion = errors.New("rar: unknown version")
+	// errRarOld is a RAR 1.5-4.x archive with a compressed member, which is not decoded.
+	errRarOld = errors.New("rar: old format, compressed")
+)
+
+// rarVersion tells the format by the signature at the very start of the data: 5 for RAR 5 and 7,
+// 4 for RAR 1.5 to 4.x, 0 for anything else. The library would also look for a signature in the
+// first megabyte; an archive behind some other prefix is not read.
+func rarVersion(data []byte) int {
+	switch rest := bytes.TrimPrefix(data, []byte(rarSig)); {
+	case len(rest) == len(data):
+	case bytes.HasPrefix(rest, []byte{1, 0}):
+		return 5
+	case bytes.HasPrefix(rest, []byte{0}):
+		return 4
+	}
+	return 0
+}
+
+// rarSem lets one rar be decoded at a time: a decoder holds its window in memory.
+var rarSem = make(chan struct{}, 1)
 
 // rarInput hands the archive to the decoder and fails once the deadline has passed, which stops
 // the decoder wherever it is: also while it decompresses members only to skip them, as it must
-// in a solid archive.
+// in a solid archive. eof is set once the decoder has asked for more than there is.
 type rarInput struct {
 	*bytes.Reader
 	deadline time.Time
+	eof      bool
 }
 
 func (in *rarInput) Read(p []byte) (int, error) {
 	if time.Now().After(in.deadline) {
 		return 0, errRarTimeout
 	}
-	return in.Reader.Read(p)
+	n, err := in.Reader.Read(p)
+	in.eof = in.eof || err == io.EOF
+	return n, err
 }
 
-// rarWalk calls visit for the files of a rar (RAR 1.5 to 7, one volume) in archive order, at most
-// maxZipEntries members, until visit returns false; r reads the member's contents. The names are
-// UTF-8, except RAR 4 names stored without the Unicode flag, which are the bytes as archived.
-// Encrypted headers, a volume that continues elsewhere, corrupt data, a window larger than
-// maxRarDict and running out of rarTimeout are errors.
-func rarWalk(data []byte, visit func(h *rardecode.FileHeader, r io.Reader) bool) (err error) {
-	rarMu.Lock()
-	defer rarMu.Unlock()
+// rarWalk calls visit for the files of a rar (one volume) in archive order, at most maxZipEntries
+// members, until visit returns false; r reads the member's contents. The names are UTF-8, except
+// RAR 4 names stored without the Unicode flag, which are the bytes as archived (the library has
+// already turned every 0x5C in them into a slash, also the second byte of a GBK or Big5 character).
+//
+// RAR 5 and 7 are read whole, with a window of at most maxRarDict. Of RAR 1.5 to 4.x only stored
+// members are read and a compressed one ends the walk with errRarOld: such a member may switch
+// to the PPMd coder in any block of its data, and the archive sizes that coder's model (up to
+// 256 MB, which this decoder holds in several times as much memory) with nothing to limit it.
+//
+// Encrypted headers, a volume that continues elsewhere, corrupt data, an archive that breaks off,
+// running out of rarTimeout and ctx ending while another rar is being read are errors too.
+func rarWalk(ctx context.Context, data []byte, visit func(h *rardecode.FileHeader, r io.Reader) bool) (err error) {
+	ver, dict := rarVersion(data), maxRarDict
+	switch ver {
+	case 0:
+		return errRarVersion
+	case 4:
+		dict = -1 // smaller than any window: the library refuses a compressed member before it sets up a decoder
+	}
+	select {
+	case rarSem <- struct{}{}:
+		defer func() { <-rarSem }()
+	case <-ctx.Done():
+		return errRarBusy
+	}
 	defer func() {
 		if recover() != nil { // the decoder is fed bytes from the network
 			err = errors.New("rar: corrupt archive")
@@ -234,17 +279,31 @@ func rarWalk(data []byte, visit func(h *rardecode.FileHeader, r io.Reader) bool)
 	}()
 	in := &rarInput{Reader: bytes.NewReader(data), deadline: time.Now().Add(rarTimeout)}
 	// a small read buffer, so that the deadline is looked at often
-	rr, err := rardecode.NewReader(in, rardecode.MaxDictionarySize(maxRarDict), rardecode.BufferSize(256))
+	rr, err := rardecode.NewReader(in, rardecode.MaxDictionarySize(dict), rardecode.BufferSize(256))
 	if err != nil {
 		return err
 	}
 	for i := 0; i < maxZipEntries; i++ {
 		h, err := rr.Next()
-		if err == io.EOF {
+		switch {
+		case err == io.EOF && ver == 4 && in.eof:
+			// The library takes running out of data between two blocks, or while skipping a
+			// member, for the end of a RAR 4 archive. It reads no further than the end block,
+			// so having run out means there was none. (Should an old packer have left it out,
+			// the members are still read and found by name; the archive just never counts as
+			// walked whole.)
+			return io.ErrUnexpectedEOF
+		case err == io.EOF:
 			return nil
-		}
-		if err != nil {
+		case ver == 4 && errors.Is(err, rardecode.ErrDictionaryTooLarge):
+			return errRarOld
+		case err != nil:
 			return err
+		}
+		if ver == 4 && h.UnPackedSize < 0 && !h.UnKnownSize {
+			// the library takes a declared size for the window if that is smaller, without
+			// minding the sign: such a member would get past the limit above
+			return errRarOld
 		}
 		if !h.IsDir && !visit(h, rr) {
 			return nil
@@ -271,11 +330,12 @@ func rarRead(h *rardecode.FileHeader, r io.Reader) []byte {
 
 // rarMember is zipMember for a rar. A rar is read front to back, so it stops at the member
 // named exactly want and reads the first one named so ignoring case as it passes it. An archive
-// that breaks off is an error unless the member was found before the break.
-func rarMember(data []byte, want string) (hit *Entry, subtitles int, err error) {
+// that breaks off, or cannot be read from some member on, is an error unless the member was
+// found before that.
+func rarMember(ctx context.Context, data []byte, want string) (hit *Entry, subtitles int, err error) {
 	var fold *Entry // Data is nil if the member could not be read
 	exact := false
-	err = rarWalk(data, func(h *rardecode.FileHeader, r io.Reader) bool {
+	err = rarWalk(ctx, data, func(h *rardecode.FileHeader, r io.Reader) bool {
 		base, ok := subBase(h.Name, !utf8.ValidString(h.Name))
 		if !ok {
 			return true

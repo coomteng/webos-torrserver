@@ -1,3 +1,4 @@
 - `assrt_search.json`, `assrt_detail.json`: recorded api.assrt.net responses.
 - `pack.rar`: RAR5, stored members, written by `packRar` in `../rar_test.go` (`go test ./subs -run TestRarFixtures -update`).
 - `sample.rar`: RAR5 written by WinRAR with one compressed member, copied unchanged from `testdata/sample.rar` of github.com/mholt/archiver/v3 v3.5.1 (MIT licence, Copyright (c) 2016 Matthew Holt).
+- `rar4_stored.rar`, `rar4_lz.rar`, `rar4_ppmd.rar`: RAR 4 format, the same three small `.srt` files in a directory `pack`, written by RARLAB's `rar` 6.24 for Linux (trial) with `rar a -ma4 -r` and `-m0` (stored), `-m3` (LZ) and `-m5 -mc63:256t+` (PPMd, order 63, 256 MB model) respectively. The last one is harmless to keep and costly to decode: about 520 MB of allocations for 405 bytes.
