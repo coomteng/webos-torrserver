@@ -6,7 +6,8 @@
  * fork does), and records both. Drives /r/<id>: paste -> 后台缓存（不播放） -> sidecar asks
  * TorrServer to preload the biggest video -> card shows 停止缓存 + 后台缓存中 -> 停止缓存 ->
  * TorrServer gets preload_stop -> 缓存 again -> total switch off stops it (item kept, label 待缓存)
- * -> on resumes -> download finishes -> 已完整缓存 -> sidecar restart re-sends unfinished items. */
+ * -> on resumes -> download finishes -> 已完整缓存 -> sidecar restart re-sends unfinished items
+ * -> per-file queue: two rows of the 文件 list queued, stop the waiting one, stop the running one. */
 const http = require('http');
 const fs = require('fs');
 const os = require('os');
@@ -23,6 +24,7 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'webos-torrserver-precache-'))
 const GOBIN = process.env.GO || 'go';
 const H1 = '2770fe270845674966e184be60ed1be0fe494f3a';
 const H2 = 'ed0da850c273e3e15a819bdcbbf418bc85107ec8';
+const H3 = '1234567890abcdef1234567890abcdef12345678';
 
 const preloads = [];   // "hash/index"
 const stops = [];      // hashes
@@ -195,7 +197,47 @@ async function until(fn, ms) { const t0 = Date.now(); while (Date.now() - t0 < m
   await sleep(600);
   await page.evaluate((h) => { const cs = Array.from(document.querySelectorAll('.t')); const c = cs.find((x) => x.querySelector('.n').textContent.indexOf('T ' + h.slice(0, 6)) >= 0); c.querySelector('.a .del').click(); }, H2);
   assert(await until(async () => (await getJSON(SIDE + '/precache')).items.length === 1, 5000), 'delete removes the precache item');
-  assert(stops.indexOf(H2) >= 0, 'and stops its preload');
+  assert(await until(() => stops.indexOf(H2) >= 0, 3000), 'and stops its preload');
+
+  /* --- per-file queue: 文件 list -> 缓存 on two rows -> one torrent entry, files in click order, one preload at a time --- */
+  await postJSON(TS + '/torrents', { action: 'add', link: 'magnet:?xt=urn:btih:' + H3 });
+  await page.reload({ waitUntil: 'load' });
+  const h3card = (fn) => page.evaluate((h, src) => { const c = Array.from(document.querySelectorAll('.t')).find((x) => x.querySelector('.n').textContent.indexOf('T ' + h.slice(0, 6)) >= 0); return c ? (0, eval)('(' + src + ')')(c) : null; }, H3, fn.toString());
+  const rowBtn = (name) => h3card(`function (c) { var r = Array.from(c.querySelectorAll('.files .f')).find(function (x) { return x.querySelector('.fn').textContent === '${name}'; }); var b = r && r.querySelector('button.pc'); return b ? b.textContent : null; }`);
+  const rowClick = (name) => h3card(`function (c) { var r = Array.from(c.querySelectorAll('.files .f')).find(function (x) { return x.querySelector('.fn').textContent === '${name}'; }); r.querySelector('button.pc').click(); return true; }`);
+  const h3 = async () => { const it = (await getJSON(SIDE + '/precache')).items.filter((i) => i.hash === H3); return { n: it.length, files: it.length ? (it[0].files || []).map((f) => f.index).join(',') : '', item: it[0] }; };
+  const h3pre = () => preloads.filter((x) => x.indexOf(H3) === 0).map((x) => x.slice(41)).join(',');
+  const h3stops = () => stops.filter((x) => x === H3).length;
+  assert(await until(async () => (await h3card('function (c) { return true; }')) === true, 6000), 'H3 card listed');
+  await h3card(`function (c) { c.querySelector('.a .cache').click(); return true; }`);
+  assert(await until(async () => (await rowBtn('Main.Movie.2024.mkv')) === '缓存' && (await rowBtn('sample.mkv')) === '缓存', 6000), 'file list open: two video rows, both 缓存');
+  await rowClick('Main.Movie.2024.mkv');
+  assert(await until(async () => h3pre() === '2' && (await rowBtn('Main.Movie.2024.mkv')) === '停止', 6000), 'row 缓存 preloads that file, row button turns into 停止: ' + h3pre());
+  await rowClick('sample.mkv');
+  assert(await until(async () => (await h3()).files === '2,1' && (await rowBtn('sample.mkv')) === '停止', 6000), 'second row is queued behind the first: files ' + (await h3()).files);
+  let q = await h3();
+  assert(q.n === 1 && q.item.index === 2 && !q.item.done, 'still one items[] entry for the torrent, index = the file being cached: ' + JSON.stringify(q.item));
+  await sleep(500);
+  assert(h3pre() === '2' && (waiters[H3] || []).length === 1, 'one preload in flight, the queued file waits: ' + h3pre());
+  assert(await until(async () => / · 0\/2$/.test((await h3card(`function (c) { var l = c.querySelector('.s b.pc'); return l ? l.textContent : ''; }`)) || ''), 6000), 'card label counts done/total files (· 0/2)');
+
+  /* stop the waiting row: it leaves the queue, the running preload is not touched */
+  await rowClick('sample.mkv');
+  assert(await until(async () => (await h3()).files === '2' && (await rowBtn('sample.mkv')) === '缓存', 6000), 'stopping the waiting row drops it from the queue');
+  await sleep(500);
+  assert(h3stops() === 0 && h3pre() === '2' && (waiters[H3] || []).length === 1, 'no preload_stop for a waiting file, the running preload goes on: stops ' + h3stops());
+
+  /* queue it again, then stop the running row: one preload_stop, the next file starts */
+  await rowClick('sample.mkv');
+  assert(await until(async () => (await h3()).files === '2,1', 6000), 'row queued again');
+  await rowClick('Main.Movie.2024.mkv');
+  assert(await until(() => h3pre() === '2,1', 6000), 'stopping the running row starts the next file: ' + h3pre());
+  assert(await until(() => h3stops() === 1, 3000), 'exactly one preload_stop for the running file: ' + h3stops());
+  q = await h3();
+  assert(q.n === 1 && q.files === '1' && q.item.index === 1 && !q.item.done, 'queue is down to the next file: ' + JSON.stringify(q.item));
+  assert(await until(async () => (await rowBtn('Main.Movie.2024.mkv')) === '缓存' && (await rowBtn('sample.mkv')) === '停止', 6000), 'rows show the stopped file as 缓存, the running one as 停止');
+  await sleep(500);
+  assert(h3stops() === 1 && h3pre() === '2,1' && (waiters[H3] || []).length === 1, 'nothing else stopped or restarted: stops ' + h3stops() + ', preloads ' + h3pre());
 
   await browser.close();
   side.kill();

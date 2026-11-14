@@ -112,15 +112,27 @@ Magic Remote: hover focuses, click activates, wheel scrolls / seeks, click on th
   Seed/Peer snapshot, which may lag). 观看 = add → wait for metadata → play the biggest video, 缓存 = add →
   background pre-cache of the biggest video — the same flow as a pasted magnet (`Magnet`, else `Link`).
 - Background pre-caching: TorrServer only downloads what a reader asks for and drops an idle torrent after 30 s, so
-  a torrent nobody watches does not download. The phone page's 后台缓存（不播放） / per-card 缓存 / per-file 缓存 buttons
-  register `{hash,index}` with the sidecar (`POST /precache`), which issues `GET /stream?link=&index=&preload&stat` —
+  a torrent nobody watches does not download. The phone page's 后台缓存（不播放） / per-card 缓存 buttons
+  register `{hash,index}` with the sidecar (`POST /precache`), the per-file 缓存 button sends `{hash,indexes:[id]}`
+  and so appends that file to the torrent's queue; for each file in turn the sidecar issues `GET /stream?link=&index=&preload&stat` —
   TorrServer's own sequential preload (state 2 "Torrent preload", exempt from the idle timeout; with the usual
   `CacheSize`/`PreloadCache` it covers the whole file). The request returns when the preload ends. 停止缓存 and the
   header switch **后台缓存：开/关** send the fork's `{"action":"preload_stop"}` ([coomteng/TorrServer](https://github.com/coomteng/TorrServer)),
   which ends the preload without dropping the torrent (a TV streaming it is unaffected). The switch keeps the list
   and resumes from the pieces on disk when turned on again. The list lives in `TORR_DATA_DIR/precache.json`
   (set it: TorrServer forgets running preloads on restart; the sidecar re-sends unfinished items on boot and
-  retries every 30 s while TorrServer is unreachable). Items run in parallel; no rate limit or disk cap — see TODO.
+  retries every 30 s while TorrServer is unreachable). Torrents run in parallel; the files of one torrent run one at
+  a time in queue order (TorrServer preloads one file per torrent). Each item of `GET /precache` lists them as
+  `files:[{index,done,error?}]`; its own `index`/`done`/`error` describe the file being cached (`done` = all files).
+  `POST /precache {hash,index}` replaces the queue with that file, `{hash,indexes:[n,...]}` appends (a finished file
+  is queued again at the end; duplicates count once; `title` only names an item that has none). `indexes` wins over
+  `index` when both are sent (`indexes:null` counts as not sent) and must hold 1..5000 file ids ≥ 1, else 400. A
+  queued id the torrent does not have is dropped once TorrServer lists the files. `POST /precache/stop {hash}` drops
+  the torrent, with `index` or `indexes` only those files (the next one starts; dropping the last file removes the
+  item). `pending:true` on stop spares finished files: only not-done files among `index`/`indexes` go — or, without
+  them, every not-done file of the torrent — so a client acting on a stale list cannot erase a `done` mark; the item
+  is removed only when no file is left. The phone card shows `· done/total` for an item with several files.
+  No rate limit or disk cap — see TODO.
   Finished torrents stop seeding (`StopSeedingWhenCached`) and close 30 s later; the pieces stay on disk.
 - Chinese titles: the indexers only have English release names, and TPB answers an unmatched query with its top-100.
   A query containing Han characters first goes to the sidecar's `GET /title?q=` (Wikidata entity search in Chinese →

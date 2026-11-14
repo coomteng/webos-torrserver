@@ -211,26 +211,32 @@ function subPanel(h,id,fname,title){var st=sget(h,id),k=skey(h,id);var d=documen
   var m=document.createElement('div');m.className='m'+(st.err?' err':'');m.textContent=st.msg;d.appendChild(m);
   return d}
 /* ---- background pre-caching (sidecar /precache; TorrServer preload + fork preload_stop) ---- */
-var PC={enabled:true,items:{}}; /* hash -> {index,title,done,error} */
+var PC={enabled:true,items:{}}; /* hash -> {index,title,done,error,files:[{index,done,error}]}; index/done/error = the file being cached */
 function pcApi(path,body){return fetch(BASE+path,{method:body?'POST':'GET',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}).then(function(r){return r.text().then(function(t){var j=null;try{j=t?JSON.parse(t):null}catch(e){}if(!r.ok)throw new Error((j&&j.error)||('HTTP '+r.status));return j})})}
 function pcLoad(){return pcApi('/precache').then(function(f){PC.enabled=!!(f&&f.enabled);PC.items={};((f&&f.items)||[]).forEach(function(it){PC.items[it.hash]=it});pcSwitch()},function(){})}
 function pcSwitch(){var b=$('pcsw');b.className=PC.enabled?'on':'';b.textContent=PC.enabled?'后台缓存：开':'后台缓存：关'}
 function pcToggleAll(){var on=!PC.enabled;if(!on&&!confirm('关闭后台缓存？正在缓存的种子会停止（已下载部分保留，再打开时继续）'))return;$('pcsw').disabled=true;pcApi('/precache/enabled',{enabled:on}).then(function(){PC.enabled=on;pcSwitch();msg(on?'后台缓存已打开，未完成的继续下载':'后台缓存已关闭')},function(e){msg(e.message,1)}).then(function(){$('pcsw').disabled=false;pcLoad().then(load)})}
-function pcAdd(hash,index,title){return pcApi('/precache',{hash:hash,index:index,title:title}).then(function(r){if(r&&r.item)PC.items[hash]=r.item;if(r&&typeof r.enabled==='boolean'){PC.enabled=r.enabled;pcSwitch()}})}
+/* q: queue the file behind the ones already listed instead of replacing them */
+function pcAdd(hash,index,title,q){return pcApi('/precache',q?{hash:hash,indexes:[index],title:title}:{hash:hash,index:index,title:title}).then(function(r){if(r&&r.item)PC.items[hash]=r.item;if(r&&typeof r.enabled==='boolean'){PC.enabled=r.enabled;pcSwitch()}})}
 function pcStop(hash){return pcApi('/precache/stop',{hash:hash}).then(function(){delete PC.items[hash]})}
+function pcStopFile(hash,index){return pcApi('/precache/stop',{hash:hash,index:index}).then(function(r){if(r&&r.item)PC.items[hash]=r.item;else delete PC.items[hash]})}
+/* is file id queued and not finished? (sidecar without files: only the one it names) */
+function pcQueued(it,id){if(!it)return false;if(!it.files)return !it.done&&it.index===id;for(var i=0;i<it.files.length;i++)if(it.files[i].index===id)return !it.files[i].done;return false}
 /* "缓存" on a card: biggest video, or the file the item already names */
 function pcCard(t,vf){var it=PC.items[t.hash];if(it&&!it.done){pcStop(t.hash).then(function(){msg('已停止后台缓存');load()},function(e){msg(e.message,1)});return}
   var go2=function(st){var v=videoFiles(st);if(!v.length)throw new Error('种子里没有视频文件');return pcAdd(t.hash,v[0].id,st.title||t.title||'').then(function(){msg('已加入后台缓存：'+v[0].path.split('/').pop()+' ✓');load()})};
   (vf.length?Promise.resolve(t):wake(t.hash)).then(go2).catch(function(e){msg(e.message,1)})}
-function pcFile(t,f){var it=PC.items[t.hash];if(it&&!it.done&&it.index===f.id){pcStop(t.hash).then(function(){msg('已停止后台缓存');load()},function(e){msg(e.message,1)});return}
-  pcAdd(t.hash,f.id,t.title||'').then(function(){msg('已加入后台缓存：'+f.path.split('/').pop()+' ✓');load()},function(e){msg(e.message,1)})}
+function pcFile(t,f){if(pcQueued(PC.items[t.hash],f.id)){pcStopFile(t.hash,f.id).then(function(){msg('已停止后台缓存');load()},function(e){msg(e.message,1)});return}
+  pcAdd(t.hash,f.id,t.title||'',1).then(function(){msg('已加入后台缓存：'+f.path.split('/').pop()+' ✓');load()},function(e){msg(e.message,1)})}
 /* label for the card subtitle */
 function pcPct(t,it){var fs=t.file_stats||[];for(var i=0;i<fs.length;i++)if(fs[i].id===it.index&&fs[i].length&&typeof fs[i].bytes_completed==='number')return Math.min(100,100*fs[i].bytes_completed/fs[i].length);return t.torrent_size?Math.min(100,100*(t.loaded_size||0)/t.torrent_size):0}
-function pcLabel(t){var it=PC.items[t.hash];if(!it)return null;var pct=pcPct(t,it);
-  if(it.done)return{cls:'pcdone',txt:'● 已完整缓存'};
-  if(!PC.enabled)return{cls:'pcoff',txt:'● 待缓存（总开关已关）'};
-  if(it.error)return{cls:'pcerr',txt:'● 后台缓存中 · '+pct.toFixed(pct<10?1:0)+'% · 等待中（'+it.error+'）'};
-  return{cls:'pc',txt:'● 后台缓存中 · '+pct.toFixed(pct<10?1:0)+'%'}}
+/* " · done/total" when the item queues more than one file */
+function pcCount(it){var fs=it.files||[];if(fs.length<2)return '';var n=0;for(var i=0;i<fs.length;i++)if(fs[i].done)n++;return ' · '+n+'/'+fs.length}
+function pcLabel(t){var it=PC.items[t.hash];if(!it)return null;var pct=pcPct(t,it),cnt=pcCount(it);
+  if(it.done)return{cls:'pcdone',txt:'● 已完整缓存'+cnt};
+  if(!PC.enabled)return{cls:'pcoff',txt:'● 待缓存（总开关已关）'+cnt};
+  if(it.error)return{cls:'pcerr',txt:'● 后台缓存中 · '+pct.toFixed(pct<10?1:0)+'%'+cnt+' · 等待中（'+it.error+'）'};
+  return{cls:'pc',txt:'● 后台缓存中 · '+pct.toFixed(pct<10?1:0)+'%'+cnt}}
 function render(list){
   var box=$('list');box.innerHTML='';
   if(!list||!list.length){box.innerHTML='<div class="empty">电视上还没有种子。在上面粘贴磁力链接开始。</div>';return}
@@ -251,7 +257,7 @@ function render(list){
     a.children[1].onclick=function(){if(vf.length){toggle(t.hash);return}wake(t.hash).then(function(){open[t.hash]=true;load()},function(e){msg(e.message,1)})};a.children[1].disabled=t.stat===1;
     a.children[2].onclick=function(){pcCard(t,vf)};a.children[2].disabled=t.stat===1;
     a.children[3].onclick=function(){del(t.hash,t.title||t.name||t.hash)};
-    if(open[t.hash]){var fl=d.children[4];var all=(t.file_stats||[]).filter(function(f){return VIDEO.test(f.path)});all.sort(function(x,y){return x.path<y.path?-1:1});all.forEach(function(f){var fname=f.path.split('/').pop();var r=document.createElement('div');r.className='f';var fOn=!!(pcIt&&!pcIt.done&&pcIt.index===f.id);r.innerHTML='<span class="fn"></span><span class="fs"></span>'+(SUBS.enabled?'<button class="sub">字幕</button>':'')+'<button class="pc'+(fOn?' on':'')+'">'+(fOn?'停止':'缓存')+'</button><button>播放</button>';r.children[0].textContent=fname;r.children[1].textContent=fmtSize(f.length);if(SUBS.enabled){r.children[2].onclick=function(){subToggle(t.hash,f.id,fname)}}r.children[r.children.length-2].onclick=function(){pcFile(t,f)};r.children[r.children.length-1].onclick=function(){playFile(t.hash,f.id,t.title||'')};fl.appendChild(r);if(SUBS.enabled&&subOpen[skey(t.hash,f.id)])fl.appendChild(subPanel(t.hash,f.id,fname,t.title||''))})}
+    if(open[t.hash]){var fl=d.children[4];var all=(t.file_stats||[]).filter(function(f){return VIDEO.test(f.path)});all.sort(function(x,y){return x.path<y.path?-1:1});all.forEach(function(f){var fname=f.path.split('/').pop();var r=document.createElement('div');r.className='f';var fOn=pcQueued(pcIt,f.id);r.innerHTML='<span class="fn"></span><span class="fs"></span>'+(SUBS.enabled?'<button class="sub">字幕</button>':'')+'<button class="pc'+(fOn?' on':'')+'">'+(fOn?'停止':'缓存')+'</button><button>播放</button>';r.children[0].textContent=fname;r.children[1].textContent=fmtSize(f.length);if(SUBS.enabled){r.children[2].onclick=function(){subToggle(t.hash,f.id,fname)}}r.children[r.children.length-2].onclick=function(){pcFile(t,f)};r.children[r.children.length-1].onclick=function(){playFile(t.hash,f.id,t.title||'')};fl.appendChild(r);if(SUBS.enabled&&subOpen[skey(t.hash,f.id)])fl.appendChild(subPanel(t.hash,f.id,fname,t.title||''))})}
     box.appendChild(d);
   });
 }
