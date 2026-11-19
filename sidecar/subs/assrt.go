@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -37,6 +39,8 @@ type File struct {
 	// The whole package the file belongs to, for when the per-file link fails. Empty if unknown.
 	Archive     string
 	ArchiveName string
+	// The package's id at the source. With it, what is downloaded is kept and not downloaded again.
+	Pkg string
 }
 
 // Source is a subtitle site.
@@ -60,6 +64,8 @@ type ASSRT struct {
 	Spacing time.Duration
 	Client  *http.Client
 	UA      string
+	// Cache keeps downloaded packages and files on disk; nil keeps nothing. Set before use.
+	Cache *PkgCache
 
 	mu    sync.Mutex
 	last  time.Time
@@ -216,7 +222,21 @@ func (a *ASSRT) Search(ctx context.Context, q string) ([]Result, error) {
 	return out, nil
 }
 
+// Files lists the files of package id. A package that was listed before is answered from the
+// cache without an API call; such files carry no links, Download asks for them when it needs any.
 func (a *ASSRT) Files(ctx context.Context, id string) ([]File, error) {
+	if l, ok := a.Cache.List(id); ok {
+		out := make([]File, len(l.Files))
+		for i, n := range l.Files {
+			out[i] = File{Name: n, ArchiveName: l.Archive, Pkg: id}
+		}
+		return out, nil
+	}
+	return a.remoteFiles(ctx, id)
+}
+
+// remoteFiles asks the API for the files of package id and their links (signed, short-lived).
+func (a *ASSRT) remoteFiles(ctx context.Context, id string) ([]File, error) {
 	env, err := a.call(ctx, "/sub/detail", url.Values{"id": {id}})
 	if err != nil {
 		return nil, err
@@ -231,28 +251,83 @@ func (a *ASSRT) Files(ctx context.Context, id string) ([]File, error) {
 	var out []File
 	for _, f := range assrtFiles(s.Filelist) {
 		if f.URL != "" {
-			out = append(out, File{Name: f.F, URL: f.URL, Archive: s.URL, ArchiveName: s.Filename})
+			out = append(out, File{Name: f.F, URL: f.URL, Archive: s.URL, ArchiveName: s.Filename, Pkg: id})
 		}
 	}
+	list := PkgList{Archive: s.Filename}
 	if len(out) == 0 && s.URL != "" {
-		out = append(out, File{Name: s.Filename, URL: s.URL})
+		out = append(out, File{Name: s.Filename, URL: s.URL, Pkg: id})
+		list.Archive = ""
 	}
 	if len(out) == 0 {
 		return nil, errors.New("assrt: no downloadable file")
 	}
+	for _, f := range out {
+		list.Files = append(list.Files, f.Name)
+	}
+	a.Cache.PutList(id, list)
 	return out, nil
 }
 
 // Download fetches a file URL from the detail response. These are CDN links that do not count
 // against the API quota, so no gate. When the per-file link answers with an error status (the
 // on-the-fly extraction fails on ASSRT's side), the file is taken from the package's archive.
+//
+// What was downloaded for a package before (the file, or the archive it was taken from) is read
+// from the cache: no request at all. What is downloaded now is kept, if it is a subtitle or an
+// archive that could be read.
 func (a *ASSRT) Download(ctx context.Context, f File) ([]byte, error) {
+	if data, ok := a.cached(ctx, f); ok {
+		log.Printf("subs: assrt#%s %q taken from the package cache", f.Pkg, msgName(f.Name))
+		return data, nil
+	}
+	if f.URL == "" && f.Pkg != "" { // listed from the cache: get the links now
+		files, err := a.remoteFiles(ctx, f.Pkg)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range files {
+			if r.Name == f.Name {
+				f = r
+			}
+		}
+		if f.URL == "" {
+			return nil, fmt.Errorf("assrt: %s is no longer in the package", msgName(f.Name))
+		}
+	}
 	data, err := a.fetch(ctx, f.URL, maxFileBytes)
 	var se *statusError
 	if errors.As(err, &se) && f.Archive != "" && f.Archive != f.URL {
 		return a.fromArchive(ctx, f, se.Status)
 	}
+	if err == nil && keepable(f.Name, data) {
+		a.Cache.PutFile(f.Pkg, f.Name, data)
+	}
 	return data, err
+}
+
+// cached returns the file from what the cache holds of its package.
+func (a *ASSRT) cached(ctx context.Context, f File) ([]byte, bool) {
+	if data, ok := a.Cache.File(f.Pkg, f.Name); ok {
+		return data, true
+	}
+	if arc, ok := a.Cache.Archive(f.Pkg); ok {
+		// an archive that cannot be read any more is downloaded again, which replaces it
+		if data, err := unpack(ctx, f, arc, 0); err == nil {
+			return data, true
+		}
+	}
+	return nil, false
+}
+
+// keepable reports whether data is worth keeping as the file called name: an archive, or a
+// subtitle that converts. An error page answered with status 200 is neither.
+func keepable(name string, data []byte) bool {
+	if k := archiveKind(data); k == "zip" || k == "rar" {
+		return true
+	}
+	_, _, err := ToVTT(data, filepath.Ext(name))
+	return err == nil
 }
 
 // maxFileBytes bounds one subtitle file taken from the network.
@@ -304,7 +379,6 @@ func (a *ASSRT) fromArchive(ctx context.Context, f File, status int) ([]byte, er
 	fail := func(format string, args ...interface{}) ([]byte, error) {
 		return nil, fmt.Errorf("assrt: per-file download failed (HTTP %d)"+format, append([]interface{}{status}, args...)...)
 	}
-	name := msgName(f.ArchiveName)
 	data, err := a.fetch(ctx, f.Archive, maxArchiveBytes+1)
 	if err != nil {
 		var se *statusError
@@ -314,8 +388,23 @@ func (a *ASSRT) fromArchive(ctx context.Context, f File, status int) ([]byte, er
 		return fail("; archive failed too (%s)", cutString(strings.TrimPrefix(err.Error(), "assrt download: "), 60))
 	}
 	if int64(len(data)) > maxArchiveBytes {
-		return fail(" and the archive is larger than %d MB: %s", maxArchiveBytes>>20, name)
+		return fail(" and the archive is larger than %d MB: %s", maxArchiveBytes>>20, msgName(f.ArchiveName))
 	}
+	out, err := unpack(ctx, f, data, status)
+	if err == nil {
+		a.Cache.PutArchive(f.Pkg, data)
+	}
+	return out, err
+}
+
+// unpack is the second half of fromArchive: data is the package's archive, status what the
+// per-file link answered (for the messages).
+func unpack(ctx context.Context, f File, data []byte, status int) ([]byte, error) {
+	fail := func(format string, args ...interface{}) ([]byte, error) {
+		return nil, fmt.Errorf("assrt: per-file download failed (HTTP %d)"+format, append([]interface{}{status}, args...)...)
+	}
+	name := msgName(f.ArchiveName)
+	var err error
 	switch kind := archiveKind(data); kind {
 	case "zip", "rar":
 		var hit *Entry

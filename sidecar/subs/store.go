@@ -63,7 +63,8 @@ func (s *Store) readMeta(d string) []Saved {
 	return out
 }
 
-// Add converts raw subtitle bytes and stores them; returns the saved record.
+// Add converts raw subtitle bytes and stores them; returns the saved record. Adding what is
+// already stored (same name, same source, same text) returns the record that is there.
 func (s *Store) Add(hash string, index int, name, src string, raw []byte) (Saved, error) {
 	d, err := s.dir(hash, index)
 	if err != nil {
@@ -79,6 +80,14 @@ func (s *Store) Add(hash string, index int, name, src string, raw []byte) (Saved
 		return Saved{}, err
 	}
 	list := s.readMeta(d)
+	// the same subtitle from the same place again: it is there already, do not keep it twice
+	for _, r := range list {
+		if r.Name == name && r.Src == src {
+			if old, err := os.ReadFile(filepath.Join(d, strconv.Itoa(r.N)+".vtt")); err == nil && string(old) == vtt {
+				return r, nil
+			}
+		}
+	}
 	n := 1
 	if len(list) > 0 {
 		n = list[len(list)-1].N + 1

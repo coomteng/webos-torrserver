@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -38,6 +39,9 @@ func newSubs(cfg Config) *Subs {
 	}
 	if cfg.AssrtToken != "" {
 		a := subs.NewASSRT(cfg.AssrtToken)
+		if cfg.SubsDir != "" { // beside the torrents' directories, whose names are 40 hex digits
+			a.Cache = subs.NewPkgCache(filepath.Join(cfg.SubsDir, ".pkg", "assrt"))
+		}
 		if b := os.Getenv("ASSRT_BASE"); b != "" { // tests point this at a fake
 			a.Base = strings.TrimRight(b, "/")
 		}

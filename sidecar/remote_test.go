@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -528,5 +529,63 @@ func TestStateFreshnessFollowsPolling(t *testing.T) {
 	}
 	if m["view"] != "player" || m["title"] != "Dune" {
 		t.Fatalf("state content changed: %v", m)
+	}
+}
+
+// A season pack is downloaded for the first episode only; the next episode and a repeat of the
+// first are served from <SubsDir>/.pkg without a request to ASSRT, and a repeat stores nothing new.
+func TestSubsFetchDownloadsPackageOnce(t *testing.T) {
+	app, srv, _ := newSubsTestApp(t)
+	hash := "0123456789abcdef0123456789abcdef01234567"
+	pack, err := os.ReadFile("subs/testdata/pack.rar")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var requests int32
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		switch r.URL.Path {
+		case "/v1/sub/detail":
+			w.Write([]byte(`{"status":0,"sub":{"subs":[{"id":42,"filename":"pack.rar","url":"http://` + r.Host + `/download/42/pack.rar?_=1&-=SECRETSIG",` +
+				`"filelist":[{"f":"第1集.简体.srt","url":"http://` + r.Host + `/onthefly/42/-/1/a.srt?_=1&-=SECRETSIG"},{"f":"第2集.简体.srt","url":"http://` + r.Host + `/onthefly/42/-/2/b.srt?_=1&-=SECRETSIG"}]}]}}`))
+		case "/download/42/pack.rar":
+			w.Write(pack)
+		default:
+			w.WriteHeader(493)
+		}
+	}))
+	t.Cleanup(cdn.Close)
+	app.subs.sources["assrt"].(*subs.ASSRT).Base = cdn.URL + "/v1"
+	fetch := func(index int, video string) map[string]interface{} {
+		t.Helper()
+		resp, m := postJSON(t, srv.URL+"/subs/fetch", map[string]interface{}{"hash": hash, "index": index, "src": "assrt", "id": "42", "video": video})
+		if resp.StatusCode != 200 {
+			t.Fatalf("fetch %s: %d %v", video, resp.StatusCode, m)
+		}
+		return m["sub"].(map[string]interface{})
+	}
+
+	if sub := fetch(1, "Show.S01E01.mkv"); sub["name"] != "Show.S01E01.chs.srt" {
+		t.Fatalf("E01: %v", sub)
+	}
+	first := atomic.LoadInt32(&requests)
+	if first != 3 { // detail, per-file link (493), archive
+		t.Fatalf("first fetch made %d requests, want 3", first)
+	}
+	if sub := fetch(2, "Show.S01E02.mkv"); sub["name"] != "Show.S01E02.chs.srt" {
+		t.Fatalf("E02: %v", sub)
+	}
+	if sub := fetch(1, "Show.S01E01.mkv"); sub["n"].(float64) != 1 {
+		t.Fatalf("E01 again was stored a second time: %v", sub)
+	}
+	if n := atomic.LoadInt32(&requests); n != first {
+		t.Fatalf("later fetches made %d more requests to ASSRT, want 0", n-first)
+	}
+	if _, err := os.Stat(filepath.Join(app.cfg.SubsDir, ".pkg", "assrt", "42", "archive")); err != nil {
+		t.Fatalf("package not kept: %v", err)
+	}
+	_, m := getJSON(t, srv.URL+"/subs/list?hash="+hash+"&index=1")
+	if l := m["subs"].([]interface{}); len(l) != 1 {
+		t.Fatalf("list: %v", m)
 	}
 }
